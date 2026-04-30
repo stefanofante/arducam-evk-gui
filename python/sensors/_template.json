@@ -1,0 +1,52 @@
+{
+    "name": "Example sensor",
+    "description": "Template profile — duplicate this file and edit it for your sensor.",
+    "guide": "Quick guide for this sensor.\n\nReplace this text with: a short overview, the most important register pairs, tips for safe register writes, datasheet references, etc.\n\nShown by the 'Guide' button in the Sensor regs tab.",
+    "tabs": {
+        "preview": "Tip shown at the top of the Preview tab when this profile is active.",
+        "controls": "Tip shown at the top of the Controls tab.",
+        "advanced": "Tip shown at the top of the Advanced tab.",
+        "info": "Tip shown at the top of the Info / Log tab."
+    },
+    "registers": [
+        {
+            "group": "Identification",
+            "name": "Chip ID (hi)",
+            "addr": "0x0000",
+            "kind": "ro",
+            "desc": "Read-only chip ID high byte"
+        },
+        {
+            "group": "Identification",
+            "name": "Chip ID (lo)",
+            "addr": "0x0001",
+            "kind": "ro",
+            "desc": "Read-only chip ID low byte"
+        },
+        {
+            "group": "Acquisition",
+            "name": "Streaming",
+            "addr": "0x0100",
+            "kind": "bool",
+            "desc": "0 = standby, 1 = streaming"
+        },
+        {
+            "group": "Acquisition",
+            "name": "Exposure",
+            "addr": "0x0202",
+            "kind": "u16be",
+            "lo": 1,
+            "hi": 65535,
+            "desc": "Coarse integration time in row periods"
+        },
+        {
+            "group": "Gain",
+            "name": "Analog gain",
+            "addr": "0x0204",
+            "kind": "u8",
+            "lo": 0,
+            "hi": 255,
+            "desc": "Analog gain code"
+        }
+    ]
+}

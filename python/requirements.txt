@@ -1,0 +1,19 @@
+arducamevksdk
+arducam-rgbir-remosaic
+Pillow>=10.0.0; python_version >= "3.8"
+
+opencv-python>=4.8,<5; python_version >= "3.13"
+numpy>=1.26,<3; python_version >= "3.13"
+pydantic>=1.10.13,<2; python_version >= "3.13"
+pydantic-yaml~=0.11.2; python_version >= "3.13"
+
+opencv-python~=4.8.0.76; python_version >= "3.6" and python_version < "3.13"
+numpy~=1.24.3; python_version >= "3.6" and python_version < "3.13"
+pydantic~=1.10.7; python_version >= "3.6" and python_version < "3.13"
+pydantic-yaml~=0.11.2; python_version >= "3.6" and python_version < "3.13"
+
+pycrc~=0.10.0; python_version >= "3.6"
+json5~=0.9.11; python_version >= "3.6"
+
+opencv-python~=4.2.0.32; python_version < "3.0"
+numpy~=1.16.6; python_version < "3.0"
