@@ -1,5 +1,0 @@
-obj-m  := mira220.o mira220color.o
-dtbo-y += mira220.dtbo mira220color.dtbo
-targets += $(dtbo-y)
-always  := $(dtbo-y)
-always-y        := $(dtbo-y)

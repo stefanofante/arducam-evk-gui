@@ -1,0 +1,1077 @@
+{
+  "name": "Mira220",
+  "description": "ams OSRAM Mira220 - 1/2.7\" 2.2 MP NIR-enhanced global shutter, mono 8/10/12-bit, MIPI CSI-2 D-PHY 2-lane up to 1.5 Gbit/s, max 90 fps @ full res. Verified against DS000642 v9-00 (2025-Sep) and Linux driver mira220.inl.",
+  "match": [
+    "MIRA220",
+    "MIRA-220"
+  ],
+  "guide": "Mira220 quick guide (per DS000642 v9-00)\n=========================================\n\n- 1600x1400 active pixels (1642x1464 physical), 2.79 um pitch, BSI global shutter.\n- 8/10/12-bit RAW, 90 fps @ 2.24 MP / 110 fps @ 1.4 MP / 255 fps @ VGA.\n- MIPI CSI-2 v1.3 + D-PHY v1.2, 2 data + 1 clock lane, max 1.5 Gbit/s/lane.\n- CCI: 16-bit register address, 8-bit data. I2C addr 0x54 (7-bit) -> 0xA8 (8-bit + W).\n- Default cfg in this kit: 640x480 @ 80 fps, 12-bit RAW.\n\nKey register groups\n-------------------\n  0x100C/100D  EXP_TIME       (LSB first!) exposure in row periods.\n  0x1012/1013  VBLANK         framerate via Tframe = ROW_LEN*(VSIZE+VBLANK)/CLK.\n  0x102B/102C  ROW_LENGTH     min 304 @ 1.5 Gbit/s 2-lane (8.2.2).\n  0x107D..1081 VSTART (3 ROIs); 0x1087..108B VSIZE.\n  0x2008/2009 HSIZE/2; 0x200A/200B HSTART/2; 0x207D/207E MIPI_HSIZE.\n  0x1003       IMAGER_STATE   master = 0x10, slave = 0x08, force IDLE = 0x3F.\n  0x10F0       IMAGER_RUN     self-clearing start-of-acquisition.\n  0x209E       BIT_DEPTH      0x2=12b, 0x4=10b, 0x6=8b.\n  0x209C/209D  HFLIP / HFLIP_B (per-context); 0x1095 VFLIP.\n  0x2091       TEST_PATTERN_CFG bit[0]=enable, bits[6:4]=mode.\n  0x205B/205C  RNC_DARK_TARGET 12-bit flat-field target (default 0x064).\n  0x204B       RNC_EN         0x3 = enable row-noise correction.\n  0x4006       BSP            0xF disable / 0x8 enable black-sun protection.\n  0x6012       LANE           0 = 1 lane, 1 = 2 lanes.\n  0x6013       CLK_MODE       0 = continuous, 1 = non-continuous.\n  0x10D7/10D8  ILLUM_EN / ILLUM_POL (illumination strobe).\n\nNotes\n-----\n- Temperature sensor is read at 0x3188/0x3189 (VPTAT) and 0x318E/0x318F (VREF);\n  see datasheet 8.5.4 for the conversion formula.\n- Frame counter is at 0x6016/0x6017 (MIPI FRAME_COUNTER), not 0x301x.\n- OTP access uses 0x0080..0x008B (see 8.5.5), not 0x35xx.\n- 0x4009 is a 6-bit X1 gain calibration value loaded from OTP 0x0A; not a 0..3 gain code.\n- PLL multiplier/dividers are programmed via the common upload file (TRADE-SECRET\n  registers, not in the public datasheet); only PLL_STATUS at 0x50DC is read-only.",
+  "tabs": {
+    "controls": "The cfg exposes Framerate and Exp(us) via the SDK. Analog gain is on the sensor (calibrated, not a simple 0..3). For experiments, write 0x4009 directly from the Sensor regs tab.",
+    "registers": "Pick a register from the sensor profile dropdown to auto-fill the address. The 8 bit checkboxes stay in sync with the value field.",
+    "advanced": "Increase USB transfer size for high-bandwidth modes (12b @ full res 90 fps). Apply between open() and start()."
+  },
+  "registers": [
+    {
+      "group": "Acquisition / state",
+      "name": "Imager state",
+      "addr": "0x1003",
+      "kind": "enum",
+      "choices": {
+        "Default / power-up (0x01)": 1,
+        "Stop at row boundary -> IDLE (0x02)": 2,
+        "Stop at frame boundary -> IDLE (0x04)": 4,
+        "Slave exposure control (0x08)": 8,
+        "Master exposure control (0x10)": 16,
+        "Force IDLE (0x3F)": 63
+      },
+      "desc": "IMAGER_STATE [5:0] - top-level FSM control",
+      "help": "Per DS000642 Table 10. Writing this register stops or arms the acquisition FSM:\n\n  0x02  Stop at the next row boundary (counters frozen, FSM -> IDLE)\n  0x04  Stop at the next frame boundary (clean stop)\n  0x08  Enter slave exposure control mode\n  0x10  Enter master exposure control mode (what the SDK uses for streaming)\n  0x3F  Force the imaging FSM to IDLE immediately\n\nReading 0x10 confirms the sensor is currently in master streaming mode. The reset/default value is 0x01.",
+      "bits": [
+        {
+          "lsb": 0,
+          "width": 6,
+          "name": "STATE",
+          "desc": "Imager state code (see choices)"
+        }
+      ]
+    },
+    {
+      "group": "Acquisition / state",
+      "name": "Imager run (start)",
+      "addr": "0x10F0",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 1,
+      "desc": "IMAGER_RUN [0] - start acquisition (self-clearing)",
+      "help": "Write 1 to start a master-mode acquisition. Bit auto-clears.\nUse IMAGER_STATE = 0x04 / 0x3F to stop.",
+      "bits": [
+        {
+          "lsb": 0,
+          "width": 1,
+          "name": "RUN",
+          "desc": "1 = start acquisition (auto-clears)"
+        }
+      ]
+    },
+    {
+      "group": "Acquisition / state",
+      "name": "Run continuous",
+      "addr": "0x1002",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 4,
+      "desc": "IMAGER_RUN_CONT [2] - free-running mode",
+      "help": "Bit 2 enables continuous run (writes 0x04). When clear, the sensor captures NB_OF_FRAMES (0x10F2/F3) and returns to IDLE.\n\nSet to 0x04 to free-run.",
+      "bits": [
+        {
+          "lsb": 2,
+          "width": 1,
+          "name": "RUN_CONT",
+          "desc": "1 = continuous, 0 = NB_OF_FRAMES then stop"
+        }
+      ]
+    },
+    {
+      "group": "Acquisition / state",
+      "name": "Power mode",
+      "addr": "0x0043",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 15,
+      "desc": "POWER_MODE [3:0] - sleep / idle / clocks",
+      "help": "DS000642 7.7. Default 0x0C = active.\n  bit0 sleep enable, bit1 idle enable, bit2 system clk, bit3 SRAM clk.\nSee Figure 12 for the active/idle/sleep transitions.",
+      "bits": [
+        {
+          "lsb": 0,
+          "width": 1,
+          "name": "SLEEP_EN",
+          "desc": "Sleep power mode enable"
+        },
+        {
+          "lsb": 1,
+          "width": 1,
+          "name": "IDLE_EN",
+          "desc": "Idle power mode enable"
+        },
+        {
+          "lsb": 2,
+          "width": 1,
+          "name": "SYS_CLK",
+          "desc": "System clock enable"
+        },
+        {
+          "lsb": 3,
+          "width": 1,
+          "name": "SRAM_CLK",
+          "desc": "SRAM clock enable"
+        }
+      ]
+    },
+    {
+      "group": "Acquisition / state",
+      "name": "Soft reset",
+      "addr": "0x0040",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 1,
+      "desc": "CMD_SOFT_RESET [0] - resets sensor except CCI/regs",
+      "help": "Writes a soft reset pulse. Self-clearing. Useful to recover after MIPI errors without re-initialising the register bank."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "Exposure (rows)",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x100C",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x100D",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "EXP_TIME (16-bit) - integration time expressed in rows",
+      "help": "Combined view of EXP_TIME (DS000642 §8.2.2). The hardware\nexpects the LSB written before the MSB; this entry performs both\nwrites in the correct order automatically.\n\nT_exposure[s] = EXP_TIME * ROW_LENGTH / CLK_IN.\n\nThe SDK 'Exp(us)' control wraps the same two bytes; prefer that\ncontrol for live tuning, this entry is meant for raw debug.",
+      "datasheet": "DS000642 §8.2.2 / Table 13"
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "Exposure (rows) LSB",
+      "addr": "0x100C",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "EXP_TIME [7:0] - LSB of exposure-time row count",
+      "help": "Write LSB before MSB (DS000642 ch.9). Total exposure = EXP_TIME * ROW_LENGTH * T_CLK_IN. The SDK 'Exp(us)' control wraps both bytes for you."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "Exposure (rows) MSB",
+      "addr": "0x100D",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "EXP_TIME [15:8]"
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "VBLANK",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x1012",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x1013",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "VBLANK (16-bit) - vertical blanking rows",
+      "help": "Sets the framerate together with VSIZE and ROW_LENGTH:\n  T_frame[s] = ROW_LENGTH * (VSIZE + VBLANK) / CLK_IN.\n\nDS000642 Table 16 lists the recommended VBLANK values per ROI\nand framerate. Increasing VBLANK lowers the framerate without\ntouching the exposure window.",
+      "datasheet": "DS000642 Table 16"
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "VBLANK LSB",
+      "addr": "0x1012",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "VBLANK [7:0] - vertical blanking rows",
+      "help": "Drives the framerate. T_frame = ROW_LENGTH*(VSIZE+VBLANK)/CLK_IN. See Table 16 for the predefined VBLANK values per ROI/fps."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "VBLANK MSB",
+      "addr": "0x1013",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "VBLANK [15:8]"
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "ROW_LENGTH",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x102B",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x102C",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "ROW_LENGTH (16-bit) - line period in CLK_IN cycles",
+      "help": "Sets the line rate. Minimum 304 with two D-PHY lanes at\n1.5 Gbit/s; double it for single-lane and increase further for\nslower MIPI rates (DS000642 Table 26).\n\nLine rate[Hz] = CLK_IN / ROW_LENGTH.",
+      "datasheet": "DS000642 Table 26"
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "ROW_LENGTH LSB",
+      "addr": "0x102B",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "ROW_LENGTH [7:0] in CLK_IN cycles",
+      "help": "Sets the line rate. Minimum 304 with two D-PHY lanes at 1.5 Gbit/s. Double it for single-lane and increase further for slower MIPI rates (see DS000642 Table 26)."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "ROW_LENGTH MSB",
+      "addr": "0x102C",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "ROW_LENGTH [15:8]"
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "NB_OF_FRAMES",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x10F2",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x10F3",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "NB_OF_FRAMES (16-bit) - frame count for non-continuous master mode",
+      "help": "How many frames are produced before the FSM returns to IDLE\nwhen RUN_CONT (0x1002) is cleared. Ignored in pipelined readout."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "Frames to capture LSB",
+      "addr": "0x10F2",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "NB_OF_FRAMES [7:0]",
+      "help": "Number of frames before the sensor returns to IDLE in master non-continuous mode. Ignored in pipelined readout."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "Frames to capture MSB",
+      "addr": "0x10F3",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "NB_OF_FRAMES [15:8]"
+    },
+    {
+      "group": "Slave / external trigger",
+      "name": "Trigger source / pulse-width",
+      "addr": "0x1001",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "EXT_EVENT_SEL [6] + EXT_EXP_PW_SEL [0]",
+      "help": "Per Tab. 12 / 15:\n  bit0 EXT_EXP_PW_SEL: 0 = exposure controlled by REQ_EXP pulse width, 1 = controlled by EXP_TIME register.\n  bit6 EXT_EVENT_SEL: 0 = REQ_EXP starts readout (single-pin), 1 = REQ_FRAME starts readout (two-pin).\nDefault 0xD0.",
+      "bits": [
+        {
+          "lsb": 0,
+          "width": 1,
+          "name": "EXP_PW_SEL",
+          "desc": "0=pulse width, 1=EXP_TIME register"
+        },
+        {
+          "lsb": 6,
+          "width": 1,
+          "name": "EVENT_SEL",
+          "desc": "0=single-pin (REQ_EXP), 1=two-pin (REQ_FRAME)"
+        }
+      ]
+    },
+    {
+      "group": "Slave / external trigger",
+      "name": "REQ_EXP (software)",
+      "addr": "0x0041",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 1,
+      "desc": "CMD_REQ_EXP [0] - software equivalent of REQ_EXP pin"
+    },
+    {
+      "group": "Slave / external trigger",
+      "name": "REQ_FRAME (software)",
+      "addr": "0x0042",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 1,
+      "desc": "CMD_REQ_FRAME [0] - software equivalent of REQ_FRAME pin (self-clearing)"
+    },
+    {
+      "group": "Slave / external trigger",
+      "name": "REQ_EXP delay",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x10D0",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x10D1",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "EXT_EXP_DELAY (16-bit) - rows between REQ_EXP and exposure",
+      "help": "Programmable delay between REQ_EXP being asserted and the\nactual start of integration. Useful to align the exposure window\nwith an external strobe.\n\nDelay[s] = EXT_EXP_DELAY * ROW_LENGTH / CLK_IN."
+    },
+    {
+      "group": "Slave / external trigger",
+      "name": "REQ_EXP delay LSB",
+      "addr": "0x10D0",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "EXT_EXP_DELAY [7:0] - delay (rows) between REQ_EXP and exposure"
+    },
+    {
+      "group": "Slave / external trigger",
+      "name": "REQ_EXP delay MSB",
+      "addr": "0x10D1",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "EXT_EXP_DELAY [15:8]"
+    },
+    {
+      "group": "Window / readout",
+      "name": "VSTART1",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x107D",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x107E",
+          "reg_lsb": 0,
+          "width": 3,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 1199,
+      "desc": "VSTART1 (11-bit) - top row of ROI #1",
+      "help": "First row of the readout window. Spans 0x107D[7:0] and\n0x107E[2:0]. The upper bits of 0x107E (bits[7:3]) carry\nVSTART2[4:0] for dual-ROI mode and are preserved by the GUI's\nread-modify-write logic.\n\nFor a centred ROI of height H on the 1200-row array:\n  VSTART1 = (1200 - H) / 2\n  VSIZE1  = H",
+      "datasheet": "DS000642 §8.2.3 / Table 13"
+    },
+    {
+      "group": "Window / readout",
+      "name": "VSTART1 LSB",
+      "addr": "0x107D",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "VSTART1 [7:0] - top row of ROI #1"
+    },
+    {
+      "group": "Window / readout",
+      "name": "VSTART1 MSB (low)",
+      "addr": "0x107E",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "VSTART1 [10:8] (low nibble) + VSTART2 [4:0] (high nibbles)"
+    },
+    {
+      "group": "Window / readout",
+      "name": "VSIZE1",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x1087",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x1088",
+          "reg_lsb": 0,
+          "width": 3,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 1200,
+      "desc": "VSIZE1 (11-bit) - rows of ROI #1",
+      "help": "Vertical size of ROI #1. Spans 0x1087[7:0] and 0x1088[2:0].\nThe upper bits of 0x1088 (bits[7:3]) carry VSIZE2[4:0] for\ndual-ROI mode and are preserved by the read-modify-write path.\n\nFrame period: T_frame = ROW_LENGTH * (VSIZE1 + VBLANK) / CLK_IN.",
+      "datasheet": "DS000642 §8.2.3 / Table 13"
+    },
+    {
+      "group": "Window / readout",
+      "name": "VSIZE1 LSB",
+      "addr": "0x1087",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "VSIZE1 [7:0] - rows of ROI #1"
+    },
+    {
+      "group": "Window / readout",
+      "name": "VSIZE1 MSB",
+      "addr": "0x1088",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "VSIZE1 [10:8] + VSIZE2 [4:0]"
+    },
+    {
+      "group": "Window / readout",
+      "name": "HSIZE",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x2008",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x2009",
+          "reg_lsb": 0,
+          "width": 2,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 800,
+      "desc": "HSIZE (10-bit) - column count expressed as columns/2",
+      "help": "Horizontal size of the readout window in pixel-pair units\n(the array is read out in column pairs, see DS000642 §8.2.3).\nFor a width W in pixels: HSIZE = W / 2. Default 800 = full 1600.",
+      "datasheet": "DS000642 §8.2.3 / Table 13"
+    },
+    {
+      "group": "Window / readout",
+      "name": "HSIZE LSB",
+      "addr": "0x2008",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "HSIZE [7:0] - columns / 2 (window is centred)",
+      "help": "Width / 2 (datasheet 8.2.3 - the window is mirrored around the array centre line). Default 800 = 0x320 (full 1600)."
+    },
+    {
+      "group": "Window / readout",
+      "name": "HSIZE MSB",
+      "addr": "0x2009",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 3,
+      "desc": "HSIZE [9:8]"
+    },
+    {
+      "group": "Window / readout",
+      "name": "HSTART",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x200A",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x200B",
+          "reg_lsb": 0,
+          "width": 2,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 1023,
+      "desc": "HSTART (10-bit) - first column expressed as column/2",
+      "help": "First column of the readout window in pixel-pair units.\nFor a centred ROI of width W: HSTART = (1600 - W) / 4.",
+      "datasheet": "DS000642 §8.2.3 / Table 13"
+    },
+    {
+      "group": "Window / readout",
+      "name": "HSTART LSB",
+      "addr": "0x200A",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "HSTART [7:0] - column / 2"
+    },
+    {
+      "group": "Window / readout",
+      "name": "HSTART MSB",
+      "addr": "0x200B",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 3,
+      "desc": "HSTART [9:8]"
+    },
+    {
+      "group": "Window / readout",
+      "name": "MIPI_HSIZE",
+      "kind": "multi",
+      "parts": [
+        {
+          "addr": "0x207D",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 0
+        },
+        {
+          "addr": "0x207E",
+          "reg_lsb": 0,
+          "width": 8,
+          "value_lsb": 8
+        }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "MIPI_HSIZE (16-bit) - columns transmitted on CSI-2 (= 2 * HSIZE)",
+      "help": "Total number of pixels per CSI-2 line. Must equal 2 * HSIZE\nin normal operation. Mismatched values cause the host to drop\nframes with a long-line / short-line error."
+    },
+    {
+      "group": "Window / readout",
+      "name": "MIPI_HSIZE LSB",
+      "addr": "0x207D",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "MIPI_HSIZE [7:0] - total columns transmitted (= 2 * HSIZE)"
+    },
+    {
+      "group": "Window / readout",
+      "name": "MIPI_HSIZE MSB",
+      "addr": "0x207E",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "MIPI_HSIZE [15:8]"
+    },
+    {
+      "group": "Window / readout",
+      "name": "VFLIP",
+      "addr": "0x1095",
+      "kind": "bool",
+      "desc": "VFLIP [0] - vertical flip (within ROI; ROI order unchanged)"
+    },
+    {
+      "group": "Window / readout",
+      "name": "HFLIP (context A)",
+      "addr": "0x209C",
+      "kind": "bool",
+      "desc": "HFLIP [0] - horizontal mirror (context A)"
+    },
+    {
+      "group": "Window / readout",
+      "name": "Bit ordering",
+      "addr": "0x2063",
+      "kind": "enum",
+      "choices": {
+        "Normal MSB-first": 0,
+        "MSB <-> LSB swap": 1
+      },
+      "desc": "BIT_ORDER [0]"
+    },
+    {
+      "group": "Data path",
+      "name": "Bit depth",
+      "addr": "0x209E",
+      "kind": "enum",
+      "choices": {
+        "12 bit (0x02)": 2,
+        "10 bit (0x04)": 4,
+        "8 bit (0x06)": 6
+      },
+      "desc": "BIT_DEPTH [2:0]",
+      "help": "Reduce bit depth to free MIPI bandwidth and reach higher fps. Remember to update CSI2_DTYPE (0x208D) accordingly: 0x4=12b, 0x2=10b, 0x1=8b."
+    },
+    {
+      "group": "Data path",
+      "name": "CSI-2 data type",
+      "addr": "0x208D",
+      "kind": "enum",
+      "choices": {
+        "RAW8 (0x01)": 1,
+        "RAW10 (0x02)": 2,
+        "RAW12 (0x04)": 4
+      },
+      "desc": "CSI2_DTYPE [2:0]",
+      "help": "MIPI Data Type encoding. Must match BIT_DEPTH (0x209E)."
+    },
+    {
+      "group": "Data path",
+      "name": "Histogram enable",
+      "addr": "0x205D",
+      "kind": "bool",
+      "desc": "HIST_EN [0]",
+      "help": "Computes a 32-bin histogram (+ clipped-black/white counters) for every frame. Sent as a CSI-2 Embedded-Data packet (0x12) at end-of-frame. See 8.5.3."
+    },
+    {
+      "group": "Data path",
+      "name": "Histogram usage ratio",
+      "addr": "0x205E",
+      "kind": "u8",
+      "lo": 1,
+      "hi": 255,
+      "desc": "HIST_USAGE_RATIO - spatial sub-sampling for the histogram"
+    },
+    {
+      "group": "Data path",
+      "name": "Test pattern",
+      "addr": "0x2091",
+      "kind": "enum",
+      "choices": {
+        "Off (0x00)": 0,
+        "Vertical gradient (0x01)": 1,
+        "Diagonal gradient (0x11)": 17,
+        "Walking 1's (0x41)": 65,
+        "Walking 0's (0x51)": 81
+      },
+      "desc": "TEST_PATTERN_CFG bit[0]=enable, bits[6:4]=mode",
+      "help": "DS000642 8.5.6:\n  bit[0]   image-test-pattern enable\n  bits[6:4] mode: 0=vertical gradient, 1=diagonal gradient,\n                  4=walking 1's, 5=walking 0's\n\nThe combined values to write are therefore 0x00, 0x01, 0x11, 0x41, 0x51.\nThe Linux driver mira220.inl only exposes the first two values (Disable / Vertical gradient). Walking-1/0 patterns are useful to validate MIPI lane integrity.\n\nNote: a 12-bit gradient fills the entire 0..4095 range, so without converting to 8-bit (>>4) it looks almost black on a uint16->uint8 display."
+    },
+    {
+      "group": "Data path",
+      "name": "Statistics control",
+      "addr": "0x2063",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 7,
+      "desc": "PIXEL_DATA_SUPP [2:1] + BIT_ORDER [0]",
+      "help": "bit1 PIXEL_DATA_SUPP: 0=send pixels and stats, 1=stats only.\nbit2: enable statistic transmission.\nDefault 0x04 (stats off, pixels on).",
+      "bits": [
+        {
+          "lsb": 0,
+          "width": 1,
+          "name": "BIT_ORDER",
+          "desc": "0=normal, 1=MSB<->LSB"
+        },
+        {
+          "lsb": 1,
+          "width": 1,
+          "name": "PIXEL_SUPP",
+          "desc": "1=suppress pixels (stats only)"
+        },
+        {
+          "lsb": 2,
+          "width": 1,
+          "name": "STAT_TX_EN",
+          "desc": "Enable statistics transmission"
+        }
+      ]
+    },
+    {
+      "group": "Image processing",
+      "name": "Black-sun protection",
+      "addr": "0x4006",
+      "kind": "enum",
+      "choices": {
+        "Disabled (0x0F)": 15,
+        "Enabled (0x08)": 8
+      },
+      "desc": "BSP [3:0] - black-sun protection",
+      "help": "Avoids dark-spot artefacts when extreme highlights saturate the pixel. The cfg in this kit writes 0x08 (enabled) at boot."
+    },
+    {
+      "group": "Image processing",
+      "name": "DCDS - row-noise CDS",
+      "addr": "0x2045",
+      "kind": "bool",
+      "desc": "CDS_RNC [0] - column CDS in the row-noise pipeline"
+    },
+    {
+      "group": "Image processing",
+      "name": "DCDS - image",
+      "addr": "0x2048",
+      "kind": "bool",
+      "desc": "CDS_IMG [0] - column CDS on the image path"
+    },
+    {
+      "group": "Image processing",
+      "name": "Row-noise correction",
+      "addr": "0x204B",
+      "kind": "enum",
+      "choices": {
+        "Disabled (0x00)": 0,
+        "Enabled (0x03)": 3
+      },
+      "desc": "RNC_EN [1:0]",
+      "help": "Enables on-chip row-noise correction (DCDS + per-row reference subtraction). The cfg writes 0x03 (enabled). See 6.4.2 / 8.4.4."
+    },
+    {
+      "group": "Image processing",
+      "name": "Flat-field target LSB",
+      "addr": "0x205B",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "RNC_DARK_TARGET [7:0] - flat-field reference (12-bit)",
+      "help": "Target value (12-bit) for row-noise correction. Default 0x064 (=100). Refer to AN001032 before changing."
+    },
+    {
+      "group": "Image processing",
+      "name": "Flat-field target MSB",
+      "addr": "0x205C",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 15,
+      "desc": "RNC_DARK_TARGET [11:8]"
+    },
+    {
+      "group": "Image processing",
+      "name": "Defect correction config",
+      "addr": "0x24DC",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 63,
+      "desc": "DC_CFG - bit0 enable, bit1 mode (0=2D,1=1D), bits[5:4] replacement",
+      "help": "Replacement value 0=median, 1=mean, 2=min, 3=max. Default 0x01 (enabled, 2D, median).",
+      "bits": [
+        {
+          "lsb": 0,
+          "width": 1,
+          "name": "EN",
+          "desc": "Defect correction enable"
+        },
+        {
+          "lsb": 1,
+          "width": 1,
+          "name": "MODE",
+          "desc": "0=2D neighbourhood, 1=1D row only"
+        },
+        {
+          "lsb": 4,
+          "width": 2,
+          "name": "REPL",
+          "desc": "0=median, 1=mean, 2=min, 3=max"
+        }
+      ]
+    },
+    {
+      "group": "Image processing",
+      "name": "Defect low-limit",
+      "addr": "0x24DD",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 15,
+      "desc": "DC_LIMIT_LOW [3:0]"
+    },
+    {
+      "group": "Image processing",
+      "name": "Defect high-limit",
+      "addr": "0x24DE",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 15,
+      "desc": "DC_LIMIT_HIGH [3:0]"
+    },
+    {
+      "group": "Image processing",
+      "name": "Defect high-limit mode",
+      "addr": "0x24DF",
+      "kind": "bool",
+      "desc": "DC_LIMIT_HIGH_MODE [0]"
+    },
+    {
+      "group": "Analog gain calibration",
+      "name": "X1 gain calibration",
+      "addr": "0x4009",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 63,
+      "desc": "RAMPGEN_TRIMM_X1 [5:0] - 1x analog-gain trim",
+      "help": "6-bit calibration value loaded from OTP address 0x0A on power-up (DS000642 8.5.5).\n\nThis is NOT a 0..3 gain code: do not use it as `0=1x, 1=2x ...`. Mira220 does not expose a public 0..3 analog-gain enum; gain steps are obtained through different ramp/PGA settings together with the PHY upload. Treat this register as a calibration trim only."
+    },
+    {
+      "group": "Illumination trigger",
+      "name": "Illumination enable",
+      "addr": "0x10D7",
+      "kind": "bool",
+      "desc": "ILLUM_EN [0] - external strobe synchronous to exposure"
+    },
+    {
+      "group": "Illumination trigger",
+      "name": "Illumination polarity",
+      "addr": "0x10D8",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 3,
+      "desc": "ILLUM_POL [1] - strobe polarity (default 0x02)"
+    },
+    {
+      "group": "MIPI / D-PHY",
+      "name": "Lane count",
+      "addr": "0x6012",
+      "kind": "enum",
+      "choices": {
+        "1 lane (0x00)": 0,
+        "2 lanes (0x01)": 1
+      },
+      "desc": "LANE [0]",
+      "help": "Single-lane mode requires doubling ROW_LENGTH (8.2.2)."
+    },
+    {
+      "group": "MIPI / D-PHY",
+      "name": "Clock mode",
+      "addr": "0x6013",
+      "kind": "enum",
+      "choices": {
+        "Continuous PHY clock (0x00)": 0,
+        "Non-continuous PHY clock (0x01)": 1
+      },
+      "desc": "CLK_MODE [0]",
+      "help": "Per DS000642: 0 = continuous, 1 = non-continuous. Most receivers prefer continuous."
+    },
+    {
+      "group": "MIPI / D-PHY",
+      "name": "Virtual channel ID",
+      "addr": "0x207C",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 3,
+      "desc": "VC_ID [1:0]"
+    },
+    {
+      "group": "MIPI / D-PHY",
+      "name": "TX controller enable",
+      "addr": "0x6006",
+      "kind": "bool",
+      "desc": "TX_CTRL_EN [0] - controller ready to transfer"
+    },
+    {
+      "group": "MIPI / D-PHY",
+      "name": "Frame mode",
+      "addr": "0x6010",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 3,
+      "desc": "FRAME_MODE - 0 general / 1 accurate (image), bit1 same for embedded"
+    },
+    {
+      "group": "MIPI / D-PHY",
+      "name": "MIPI soft reset",
+      "addr": "0x5004",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 63,
+      "desc": "MIPI_SOFT_RESET - per-block resets",
+      "help": "bit0 D-PHY, bit1 pixel clk, bit2 lane clk, bit3 byte clk, bit4 escape clk, bit5 APB clk."
+    },
+    {
+      "group": "Status / read-only",
+      "name": "PLL status",
+      "addr": "0x50DC",
+      "kind": "ro",
+      "desc": "PLL_STATUS - bit0 lock, bit1 ref-clock missing"
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Frame counter (16-bit)",
+      "kind": "computed",
+      "reads": [
+        {
+          "addr": "0x6017",
+          "name": "lo"
+        },
+        {
+          "addr": "0x6016",
+          "name": "hi"
+        }
+      ],
+      "compose": "(hi << 8) | lo",
+      "format": "{value} (0x{value:04X})",
+      "desc": "FRAME_COUNTER - 16-bit free-running, MSB at 0x6016, LSB at 0x6017",
+      "help": "Concatenates the two FRAME_COUNTER bytes (DS000642 \u00a78.3.3, register 0x6016/0x6017) and shows the resulting 16-bit count both in decimal and hex. The counter periodically resets to 1 once it reaches the value programmed in 0x6016/17 (0x3C00 by default)."
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Frame counter LSB",
+      "addr": "0x6017",
+      "kind": "ro",
+      "desc": "FRAME_COUNTER [7:0]"
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Frame counter MSB",
+      "addr": "0x6016",
+      "kind": "ro",
+      "desc": "FRAME_COUNTER [15:8]"
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Die temperature",
+      "kind": "computed",
+      "reads": [
+        {
+          "addr": "0x3188",
+          "name": "sig_lo"
+        },
+        {
+          "addr": "0x3189",
+          "name": "sig_hi",
+          "mask": "0x0F"
+        },
+        {
+          "addr": "0x318E",
+          "name": "rst_lo"
+        },
+        {
+          "addr": "0x318F",
+          "name": "rst_hi",
+          "mask": "0x03"
+        }
+      ],
+      "compose": "((sig_hi << 8) | sig_lo) - ((rst_hi << 8) | rst_lo)",
+      "convert": "(raw * 0.181 - 140) / 1.63 + 25",
+      "unit": "\u00b0C",
+      "format": "{value:.1f} \u00b0C   (sig=0x{sig:03X}, rst=0x{rst:03X}, diff={raw})",
+      "desc": "T_die - on-chip temperature sensor (DS000642 \u00a78.5.4)",
+      "help": "Reads VPTAT (TSENS_SIG, 12 bits at 0x3188/0x3189) and VREF\n(TSENS_RST, 10 bits at 0x318E/0x318F) and applies the\nuncalibrated conversion from datasheet section 8.5.4.1:\n\n  T[\u00b0C] = ((TSENS_SIG - TSENS_RST) * 0.181 - 140) / 1.63 + 25\n\nA single-point calibration constant is stored in OTP (chuck\ntemperature, sig/rst at 60 \u00b0C). For higher accuracy, multiply\nthis raw temperature by Tchuck / Tcal (see DS000642 8.5.4.2).\n\nNotes\n-----\n* The high bytes are masked (sig: bits[3:0], rst: bits[1:0]) to\n  drop the reserved upper bits documented in the register map.\n* The displayed `sig` / `rst` fields are the composed VPTAT and\n  VREF values; `raw` is their difference (proportional to T)."
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Temperature VPTAT (12-bit)",
+      "kind": "computed",
+      "reads": [
+        {
+          "addr": "0x3188",
+          "name": "lo"
+        },
+        {
+          "addr": "0x3189",
+          "name": "hi",
+          "mask": "0x0F"
+        }
+      ],
+      "compose": "(hi << 8) | lo",
+      "format": "{value} (0x{value:03X})",
+      "desc": "TSENS_SIG combined - voltage proportional to temperature"
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Temperature VPTAT LSB",
+      "addr": "0x3188",
+      "kind": "ro",
+      "desc": "TSENS_SIG [7:0] - signal voltage proportional to temperature"
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Temperature VPTAT MSB",
+      "addr": "0x3189",
+      "kind": "ro",
+      "desc": "TSENS_SIG [11:8]"
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Temperature VREF (10-bit)",
+      "kind": "computed",
+      "reads": [
+        {
+          "addr": "0x318E",
+          "name": "lo"
+        },
+        {
+          "addr": "0x318F",
+          "name": "hi",
+          "mask": "0x03"
+        }
+      ],
+      "compose": "(hi << 8) | lo",
+      "format": "{value} (0x{value:03X})",
+      "desc": "TSENS_RST combined - temperature-invariant reference"
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Temperature VREF LSB",
+      "addr": "0x318E",
+      "kind": "ro",
+      "desc": "TSENS_RST [7:0] - temperature-invariant reference"
+    },
+    {
+      "group": "Status / read-only",
+      "name": "Temperature VREF MSB",
+      "addr": "0x318F",
+      "kind": "ro",
+      "desc": "TSENS_RST [9:8]"
+    },
+    {
+      "group": "OTP access",
+      "name": "OTP command",
+      "addr": "0x0080",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 63,
+      "desc": "OTP_CMD bit0=write, bit1=read, bit2=power-up, bit3=power-down (self-clearing)"
+    },
+    {
+      "group": "OTP access",
+      "name": "OTP status",
+      "addr": "0x0081",
+      "kind": "ro",
+      "desc": "OTP_STATUS bit0=ready, bit1=power, bit2=standby"
+    },
+    {
+      "group": "OTP access",
+      "name": "OTP address LSB",
+      "addr": "0x0086",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "OTP_ADDR [7:0] (10-bit total: 0..1023)"
+    },
+    {
+      "group": "OTP access",
+      "name": "OTP address MSB",
+      "addr": "0x0087",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 3,
+      "desc": "OTP_ADDR [9:8]"
+    },
+    {
+      "group": "I/O",
+      "name": "Drive strength",
+      "addr": "0x0012",
+      "kind": "u8",
+      "lo": 0,
+      "hi": 7,
+      "desc": "DRIVE_STRENGTH [2:0] - 2/4/8/12 mA digital, CCI sink select",
+      "help": "bits[1:0]: digital outputs 0=2mA, 1=4mA, 2=8mA, 3=12mA.\nbit[2]: CCI sink current 0=4mA, 1=20mA."
+    }
+  ]
+}
