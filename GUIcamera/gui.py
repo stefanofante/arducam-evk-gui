@@ -1,11 +1,36 @@
 """
 Arducam EVK camera GUI.
 
-Sensor configuration is read from:
-- configs/*.cfg    (TYPE, SIZE, BIT_WIDTH, FORMAT, I2C_*)
-- sensors/*.json   (register map and UI hints)
+This module implements the Tkinter front-end of the GUIcamera
+application. The GUI is split in three cooperating components:
 
-Add a new sensor by dropping matching .cfg + .json files; no code change.
+* :class:`CameraWorker` -- thin wrapper around the SDK ``Camera``
+  object. It owns the USB capture thread and pushes the latest
+  frame onto a bounded queue together with simple capture statistics.
+* :class:`CameraGUI` -- the Tkinter application. It builds the widget
+  tree, drives the user interaction, periodically polls the worker's
+  frame queue and updates the preview canvas, status bar and log
+  console using ``Tk.after`` timers (so the main loop is never
+  blocked).
+* Module-level helpers -- ``main()`` boots a Tk root, instantiates
+  :class:`CameraGUI` and starts the main loop.
+
+Sensor configuration is discovered at run-time and is therefore not
+hard-coded in this file:
+
+* ``configs/*.cfg`` -- SDK camera configurations. Only the ``TYPE``,
+  ``SIZE``, ``BIT_WIDTH``, ``FORMAT`` and ``I2C_*`` fields are read by
+  the GUI metadata parser; the SDK itself consumes the full file.
+* ``sensors/*.json`` -- per-sensor register maps and UI hints. A
+  configuration is bound to a profile through the case-insensitive
+  ``match`` list contained in the JSON file.
+
+Adding a new sensor therefore amounts to dropping a matching pair of
+``.cfg`` and ``.json`` files in the appropriate directories; no Python
+change is required.
+
+Author:  Stefano Fante - STLINE srl
+License: MIT (see ../LICENSE)
 """
 
 from __future__ import annotations
@@ -71,7 +96,37 @@ LOG_MAX_LINES = 1000
 
 @dataclass
 class Stats:
-    """Capture statistics."""
+    """Capture statistics shared between the worker and the GUI.
+
+    Instances are mutated by the capture thread under
+    :attr:`CameraWorker.lock` and read by the Tk main loop in
+    :meth:`CameraGUI._tick_status`. All fields are plain Python
+    scalars so reads are inherently atomic on CPython, but the lock
+    is still used to guarantee a consistent snapshot.
+
+    Attributes:
+        fps: Nominal frame-rate declared by the configuration
+            (currently unused, kept for forward compatibility).
+        fps_measured: Rolling average computed once per second from
+            the actual frame arrival timestamps.
+        bw_mb: Effective USB bandwidth in megabytes per second
+            (reserved for future use).
+        seq: Sequence number of the last frame received.
+        width: Width in pixels of the last frame received.
+        height: Height in pixels of the last frame received.
+        frames: Total number of frames successfully pulled from the
+            SDK since :meth:`CameraWorker.start`.
+        dropped: Number of frames discarded because the GUI queue was
+            full.
+        missed: Number of frames the SDK reported as missing.
+        bad_convert: Number of frames whose conversion to a display
+            image raised an exception.
+        attempts: Number of capture attempts performed by the worker
+            (frames + errors).
+        none_frames: Number of times the SDK returned ``None`` within
+            the configured timeout.
+    """
+
     fps: float = 0.0
     fps_measured: float = 0.0
     bw_mb: float = 0.0
@@ -91,37 +146,72 @@ class Stats:
 # ============================================================================
 
 class CameraWorker:
-    """
-    Manages SDK Camera object and capture thread.
+    """Owns the SDK :class:`Camera` object and the capture thread.
 
-    Responsibilities:
-    * Keeps DeviceList and Camera alive throughout session
-    * Wraps Camera.open/init/start/stop/close for the GUI thread
-    * Runs daemon capture thread that pulls frames and updates stats
-    * Maintains thread-safe Stats object for GUI reads
+    The worker hides every interaction with the EVK SDK from the GUI
+    layer. It is responsible for:
 
-    Threading:
-    * GUI calls public methods from Tk main thread
-    * Capture thread only writes to frame_queue and stats (under lock)
-    * Worker never mutates SDK objects from capture thread
+    * enumerating the USB devices that the SDK can see,
+    * opening / initialising / closing the camera against a given
+      ``.cfg`` file,
+    * starting and stopping the streaming loop,
+    * running the capture loop on a daemon thread and publishing the
+      latest frame on :attr:`frame_queue` together with the running
+      :class:`Stats`,
+    * exposing single-register read/write helpers for the GUI
+      register editor.
+
+    Threading model
+    ---------------
+    All public methods are called from the Tk main thread. The capture
+    loop runs in a dedicated daemon thread which only writes to
+    :attr:`frame_queue` (bounded to two slots to bound memory and
+    drop stale frames automatically) and to :attr:`stats` while
+    holding :attr:`lock`. The worker never mutates the SDK objects
+    from the capture thread.
+
+    Log messages produced by the SDK callbacks and by error paths are
+    forwarded to the GUI through the ``log_callback`` provided at
+    construction time.
     """
 
     def __init__(self, log_callback):
+        """Create an idle worker.
+
+        Args:
+            log_callback: Callable accepting a single ``str`` argument.
+                It is invoked from arbitrary threads, so the callback
+                must be thread-safe (the GUI uses a :class:`queue.Queue`
+                drained by a Tk ``after`` timer).
+        """
         self.log_callback = log_callback
         self.camera: Optional[Camera] = None
         self.device_list: Optional[DeviceList] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        # ``maxsize=2`` keeps memory bounded while still letting the
+        # GUI display the freshest available frame even when the Tk
+        # main loop temporarily falls behind the capture thread.
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self.stats = Stats()
         self.lock = threading.Lock()
 
     def _log(self, msg: str) -> None:
+        """Forward a message to the user-supplied log callback."""
         if self.log_callback:
             self.log_callback(msg)
 
     def enumerate_devices(self) -> List[str]:
-        """Enumerate connected USB devices."""
+        """Return a human-readable list of currently attached EVK devices.
+
+        A fresh :class:`DeviceList` is allocated on every call so the
+        result reflects hot-plug events that occurred after the GUI was
+        started.
+
+        Returns:
+            One ``"[index] name"`` entry per device, or an empty list
+            when no device is present (or the SDK raised).
+        """
         try:
             self.device_list = DeviceList()
             devices = []
@@ -134,16 +224,23 @@ class CameraWorker:
             return []
 
     def open(self, cfg_path: str, device_index: int = 0, dma: bool = False) -> bool:
-        """
-        Open camera with specified config file.
+        """Open the camera against a specific configuration file.
 
         Args:
-            cfg_path: Path to .cfg configuration file
-            device_index: USB device index
-            dma: Enable DMA mode
+            cfg_path: Absolute or relative path to the ``.cfg`` file
+                that describes the desired sensor mode. ``.bin``
+                configuration blobs are detected by extension.
+            device_index: Zero-based index in the cached
+                :class:`DeviceList`. Call :meth:`enumerate_devices`
+                beforehand.
+            dma: When ``True`` the worker enables the SDK
+                ``BUFFER_TRANSFER_MODE`` with a 128-buffer ring, which
+                lowers per-frame latency at the cost of a larger
+                kernel-side allocation.
 
         Returns:
-            True if successful, False otherwise
+            ``True`` on success, ``False`` if any SDK call raised. The
+            caller can inspect the log callback for the exact error.
         """
         try:
             if not self.device_list or device_index >= self.device_list.device_count:
@@ -160,9 +257,12 @@ class CameraWorker:
             self.camera.init()
 
             if dma:
+                # The DMA path is optional and not supported by every
+                # firmware revision; failures are swallowed on
+                # purpose to keep the open flow tolerant.
                 try:
                     self.camera.set_transfer_option(MemType.BUFFER_TRANSFER_MODE, 1, 128)
-                except:
+                except Exception:
                     pass
 
             self._log(f"Opened {cfg_path} @ device {device_index}")
@@ -173,7 +273,11 @@ class CameraWorker:
             return False
 
     def close(self) -> None:
-        """Close camera and clean up."""
+        """Stop streaming (if active) and release the SDK handle.
+
+        Always safe to call: missing thread/camera objects are handled
+        gracefully so the GUI can use this as a teardown primitive.
+        """
         if self._thread:
             self._stop.set()
             self._thread.join(timeout=2)
@@ -181,13 +285,18 @@ class CameraWorker:
         if self.camera:
             try:
                 self.camera.close()
-            except:
+            except Exception:
                 pass
             self.camera = None
         self._log("Camera closed")
 
     def start(self) -> bool:
-        """Start streaming."""
+        """Start the SDK stream and spawn the capture thread.
+
+        Returns:
+            ``True`` if the stream was successfully started, ``False``
+            otherwise (no camera open, SDK error, ...).
+        """
         try:
             if not self.camera:
                 return False
@@ -202,7 +311,7 @@ class CameraWorker:
             return False
 
     def stop(self) -> None:
-        """Stop streaming."""
+        """Signal the capture thread to exit and stop the SDK stream."""
         if self._thread:
             self._stop.set()
             self._thread.join(timeout=2)
@@ -210,12 +319,20 @@ class CameraWorker:
         if self.camera:
             try:
                 self.camera.stop()
-            except:
+            except Exception:
                 pass
         self._log("Streaming stopped")
 
     def _capture_loop(self) -> None:
-        """Capture loop (runs in worker thread)."""
+        """Main capture loop, executed on the worker thread.
+
+        Pulls frames from the SDK with a 1-second timeout, converts
+        them to a displayable :class:`numpy.ndarray` (BGR) and pushes
+        the result on the bounded frame queue. Statistics are updated
+        atomically under :attr:`lock`. The loop exits on the first
+        unhandled exception or when :attr:`_stop` is set by
+        :meth:`stop`.
+        """
         last_tick = time.time()
         frame_count = 0
 
@@ -223,6 +340,10 @@ class CameraWorker:
             try:
                 frame = self.camera.capture(1000)
                 if frame is None:
+                    # Timeout: the SDK did not produce a frame within
+                    # the requested window. This is not necessarily an
+                    # error (e.g. external trigger mode), so the loop
+                    # keeps running.
                     with self.lock:
                         self.stats.none_frames += 1
                     continue
@@ -231,16 +352,21 @@ class CameraWorker:
                     self.stats.attempts += 1
                     self.stats.frames += 1
 
-                # Convert image
+                # Convert RAW/YUV/RGB565/JPEG payloads to a BGR ndarray
+                # suitable for ``cv2`` and Tk display. Conversion
+                # errors are counted but do not stop the stream.
                 try:
                     display_img = from_image(frame)
                     if display_img is not None:
                         self.frame_queue.put(display_img, block=False)
-                except:
+                except Exception:
                     with self.lock:
                         self.stats.bad_convert += 1
 
-                # Update FPS
+                # Measured FPS over a sliding one-second window. The
+                # value is published to :attr:`stats` so the GUI can
+                # poll it at its own cadence without doing any timing
+                # of its own.
                 now = time.time()
                 frame_count += 1
                 if now - last_tick > 1.0:
@@ -255,22 +381,38 @@ class CameraWorker:
                 break
 
     def read_register(self, addr: int) -> Optional[int]:
-        """Read a single sensor register."""
+        """Read a single sensor register through the SDK CCI helper.
+
+        Args:
+            addr: 16-bit register address.
+
+        Returns:
+            The register value, or ``None`` if the camera is not open
+            or the SDK raised.
+        """
         try:
             if not self.camera:
                 return None
             return self.camera.read_register(addr)
-        except:
+        except Exception:
             return None
 
     def write_register(self, addr: int, value: int) -> bool:
-        """Write a single sensor register."""
+        """Write a single sensor register through the SDK CCI helper.
+
+        Args:
+            addr: 16-bit register address.
+            value: Value to write; width is sensor-specific.
+
+        Returns:
+            ``True`` on success, ``False`` otherwise.
+        """
         try:
             if not self.camera:
                 return False
             self.camera.write_register(addr, value)
             return True
-        except:
+        except Exception:
             return False
 
 
@@ -279,33 +421,67 @@ class CameraWorker:
 # ============================================================================
 
 class CameraGUI:
-    """Main Tkinter application."""
+    """Top-level Tkinter application.
+
+    Builds the widget tree, owns a single :class:`CameraWorker` and
+    schedules three periodic ``Tk.after`` callbacks that drive the
+    live UI updates:
+
+    * :meth:`_tick_preview` -- 10 Hz; drains the worker frame queue
+      and refreshes the preview canvas.
+    * :meth:`_tick_status` -- 2 Hz; updates the bottom status bar with
+      the latest :class:`Stats` snapshot.
+    * :meth:`_drain_logs` -- 5 Hz; moves log records from the worker
+      log queue into the visible :class:`tkinter.Text` widget while
+      enforcing :data:`LOG_MAX_LINES` to avoid unbounded growth.
+
+    The class exposes plain ``_on_*`` methods bound to the toolbar
+    buttons so the same actions can be triggered programmatically by
+    integration tests if needed.
+    """
 
     def __init__(self, root: tk.Tk):
+        """Build the widget tree and arm the periodic UI timers.
+
+        Args:
+            root: An already-created :class:`tkinter.Tk` instance. The
+                caller is responsible for running ``root.mainloop()``
+                (see :func:`main`).
+        """
         self.root = root
         self.root.title("Arducam EVK Camera")
         self.root.geometry("1280x720")
 
-        # Configuration manager
+        # Discover available sensors and configurations once at
+        # start-up. The user can refresh the device list at any time,
+        # but adding a new .cfg/.json pair currently requires
+        # restarting the GUI.
         self.config_manager = ConfigManager(Path(__file__).parent)
         self.config_manager.discover_configurations()
         self.config_manager.discover_sensor_profiles()
 
-        # Worker
+        # Single worker shared across the whole session. The worker is
+        # idle until the user clicks ``Open`` / ``Start``.
         self.worker = CameraWorker(self._log)
 
-        # State
+        # GUI-side state mirroring the worker lifecycle.
         self.current_config: Optional[Path] = None
         self.camera_open = False
         self.streaming = False
         self.sensor_profile = None
+        # Thread-safe channel used by :meth:`_log` to forward worker
+        # messages to the Tk main loop (see :meth:`_drain_logs`).
         self.log_queue: queue.Queue = queue.Queue()
+        # Strong reference to the currently displayed PhotoImage;
+        # without it Tk would garbage-collect the underlying buffer
+        # while the canvas is still showing it.
         self._photo_ref = None
 
-        # Build UI
         self._build_ui()
 
-        # Periodic updates
+        # Arm the periodic UI timers. The intervals are coarse enough
+        # for a smooth user experience (~10 Hz preview) while keeping
+        # the Tk event loop almost entirely idle.
         self.root.after(100, self._tick_preview)
         self.root.after(500, self._tick_status)
         self.root.after(200, self._drain_logs)
@@ -511,16 +687,25 @@ class CameraGUI:
 # ============================================================================
 
 def main() -> None:
-    """Launch the GUI application."""
+    """Boot a Tk root and run the GUI main loop.
+
+    This function is the documented entry-point of the package. It is
+    invoked both by :mod:`launch_gui` and when the module is executed
+    directly (``python gui.py``).
+    """
     root = tk.Tk()
 
     try:
-        # Set window icon (if available)
+        # Empty string falls back to the default Tk icon while still
+        # exercising the call so the catch-all below keeps the GUI
+        # portable on platforms without ``iconbitmap`` support.
         root.iconbitmap(default="")
     except tk.TclError:
         pass
 
     app = CameraGUI(root)
+    # Route the window manager close button through our shutdown path
+    # so the capture thread and SDK handles are released cleanly.
     root.protocol("WM_DELETE_WINDOW", app._on_close_window)
     root.mainloop()
 

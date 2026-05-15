@@ -1,165 +1,165 @@
 {
-  "name": "TemplateSensor",
-  "description": "Template sensor profile. Copy this and customize for your sensor.",
-  "match": [
-    "TEMPLATE_SENSOR",
-    "TemplateSensor"
-  ],
-  "guide": "Quick Start Guide\n==================\n\n- Resolution: configurable via SIZE field in .cfg\n- I2C: see I2C_ADDR and I2C_MODE in .cfg\n- For detailed register map, see the sensor datasheet\n\nRegister Groups\n---------------\n- Exposure / framing: integration time, frame rate control\n- Window / readout: ROI (region of interest) settings\n- ADC / gains: analog and digital gain controls\n- MIPI / CSI-2: data link configuration\n- Power / state: sensor state machine\n\nNotes\n-----\n- Always write LSB before MSB for multi-byte registers\n- Some registers require the sensor to be in standby mode\n- Use the GUI's Sensor regs tab for interactive register editing\n",
-  "tabs": {
-    "preview": "Live video preview from the sensor. Use Controls tab to adjust exposure and gain.",
-    "controls": "Dynamic controls loaded from the .cfg file (e.g., Exposure, Gain, Framerate).",
-    "registers": "Register-by-register editor. Pick a register to see its description and bit-level details.",
-    "advanced": "USB transfer tuning, sensor mode selection, SDK log level.",
-    "info": "Sensor identification, firmware version, and SDK debug messages."
-  },
-  "registers": [
-    {
-      "group": "Acquisition / state",
-      "name": "Sensor state",
-      "addr": "0x0100",
-      "kind": "enum",
-      "choices": {
-        "Standby (0x00)": 0,
-        "Streaming (0x01)": 1
-      },
-      "lo": 0,
-      "hi": 1,
-      "desc": "Top-level sensor power state",
-      "help": "Controls the main state machine.\n\n0 = Standby (analog blocks idle, registers accessible)\n1 = Streaming (MIPI active, frames produced)\n\nUse this to stop/start capture without losing register values."
+    "name": "TemplateSensor",
+    "description": "Template sensor profile. Copy this and customize for your sensor.",
+    "match": [
+        "TEMPLATE_SENSOR",
+        "TemplateSensor"
+    ],
+    "guide": "Quick Start Guide\n==================\n\n- Resolution: configurable via SIZE field in .cfg\n- I2C: see I2C_ADDR and I2C_MODE in .cfg\n- For detailed register map, see the sensor datasheet\n\nRegister Groups\n---------------\n- Exposure / framing: integration time, frame rate control\n- Window / readout: ROI (region of interest) settings\n- ADC / gains: analog and digital gain controls\n- MIPI / CSI-2: data link configuration\n- Power / state: sensor state machine\n\nNotes\n-----\n- Always write LSB before MSB for multi-byte registers\n- Some registers require the sensor to be in standby mode\n- Use the GUI's Sensor regs tab for interactive register editing\n",
+    "tabs": {
+        "preview": "Live video preview from the sensor. Use Controls tab to adjust exposure and gain.",
+        "controls": "Dynamic controls loaded from the .cfg file (e.g., Exposure, Gain, Framerate).",
+        "registers": "Register-by-register editor. Pick a register to see its description and bit-level details.",
+        "advanced": "USB transfer tuning, sensor mode selection, SDK log level.",
+        "info": "Sensor identification, firmware version, and SDK debug messages."
     },
-    {
-      "group": "Exposure / framing",
-      "name": "Exposure time (rows)",
-      "kind": "multi",
-      "parts": [
+    "registers": [
         {
-          "addr": "0x0202",
-          "reg_lsb": 0,
-          "width": 8,
-          "value_lsb": 0
+            "group": "Acquisition / state",
+            "name": "Sensor state",
+            "addr": "0x0100",
+            "kind": "enum",
+            "choices": {
+                "Standby (0x00)": 0,
+                "Streaming (0x01)": 1
+            },
+            "lo": 0,
+            "hi": 1,
+            "desc": "Top-level sensor power state",
+            "help": "Controls the main state machine.\n\n0 = Standby (analog blocks idle, registers accessible)\n1 = Streaming (MIPI active, frames produced)\n\nUse this to stop/start capture without losing register values."
         },
         {
-          "addr": "0x0203",
-          "reg_lsb": 0,
-          "width": 8,
-          "value_lsb": 8
-        }
-      ],
-      "lo": 1,
-      "hi": 65535,
-      "desc": "EXP_TIME (16-bit) — integration time in row periods",
-      "help": "Exposure duration expressed as a number of row scan periods.\n\nT_exposure[s] = EXP_TIME × ROW_LENGTH / CLK_IN\n\nWrite LSB (addr 0x0202) before MSB (addr 0x0203)."
-    },
-    {
-      "group": "Exposure / framing",
-      "name": "Frame length (rows)",
-      "kind": "multi",
-      "parts": [
-        {
-          "addr": "0x0340",
-          "reg_lsb": 0,
-          "width": 8,
-          "value_lsb": 0
+            "group": "Exposure / framing",
+            "name": "Exposure time (rows)",
+            "kind": "multi",
+            "parts": [
+                {
+                    "addr": "0x0202",
+                    "reg_lsb": 0,
+                    "width": 8,
+                    "value_lsb": 0
+                },
+                {
+                    "addr": "0x0203",
+                    "reg_lsb": 0,
+                    "width": 8,
+                    "value_lsb": 8
+                }
+            ],
+            "lo": 1,
+            "hi": 65535,
+            "desc": "EXP_TIME (16-bit) — integration time in row periods",
+            "help": "Exposure duration expressed as a number of row scan periods.\n\nT_exposure[s] = EXP_TIME × ROW_LENGTH / CLK_IN\n\nWrite LSB (addr 0x0202) before MSB (addr 0x0203)."
         },
         {
-          "addr": "0x0341",
-          "reg_lsb": 0,
-          "width": 8,
-          "value_lsb": 8
+            "group": "Exposure / framing",
+            "name": "Frame length (rows)",
+            "kind": "multi",
+            "parts": [
+                {
+                    "addr": "0x0340",
+                    "reg_lsb": 0,
+                    "width": 8,
+                    "value_lsb": 0
+                },
+                {
+                    "addr": "0x0341",
+                    "reg_lsb": 0,
+                    "width": 8,
+                    "value_lsb": 8
+                }
+            ],
+            "lo": 10,
+            "hi": 65535,
+            "desc": "FRAME_LENGTH (16-bit) — total rows per frame",
+            "help": "Sets the vertical frame period (in rows).\n\nT_frame[s] = FRAME_LENGTH × ROW_LENGTH / CLK_IN\n\nIncreasing FRAME_LENGTH reduces the framerate without touching exposure."
+        },
+        {
+            "group": "Window / readout",
+            "name": "Window width",
+            "addr": "0x0344",
+            "kind": "u16be",
+            "lo": 1,
+            "hi": 9999,
+            "desc": "Horizontal window size (pixels)",
+            "help": "Number of pixels to read per line. Set to full width or less for windowed mode."
+        },
+        {
+            "group": "Window / readout",
+            "name": "Window height",
+            "addr": "0x0346",
+            "kind": "u16be",
+            "lo": 1,
+            "hi": 9999,
+            "desc": "Vertical window size (rows)",
+            "help": "Number of rows to read. Full height or less for windowed mode."
+        },
+        {
+            "group": "ADC / gains",
+            "name": "Analog gain",
+            "addr": "0x0204",
+            "kind": "u16be",
+            "lo": 0,
+            "hi": 1023,
+            "desc": "ANA_GAIN — analog amplifier setting",
+            "help": "Pre-ADC gain control. The exact gain multiplier depends on the sensor.\nTypically 100 = 1x, 200 = 2x, etc. (consult datasheet).\n\nHigher values increase sensitivity at the cost of dynamic range."
+        },
+        {
+            "group": "ADC / gains",
+            "name": "Digital gain",
+            "addr": "0x020E",
+            "kind": "u16be",
+            "lo": 0,
+            "hi": 4095,
+            "desc": "DIG_GAIN — post-ADC digital multiplier (16-bit fixed-point, 1.0x = 256)",
+            "help": "Applied after the ADC. Fixed-point format: 1.0x = 0x100 = 256.\n\nExample: 0x200 = 2.0x, 0x80 = 0.5x\n\nLess noise than analog gain at the cost of reduced SNR."
+        },
+        {
+            "group": "MIPI / data link",
+            "name": "Lane count",
+            "addr": "0x0110",
+            "kind": "enum",
+            "choices": {
+                "1 data lane": 0,
+                "2 data lanes": 1,
+                "4 data lanes": 2
+            },
+            "lo": 0,
+            "hi": 2,
+            "desc": "Number of active D-PHY data lanes",
+            "help": "Configures how many parallel MIPI data lanes are used.\n\n0 = 1 lane (lower bandwidth, reduced resolution or fps)\n1 = 2 lanes (standard)\n2 = 4 lanes (high bandwidth)\n\nMust match host receiver configuration."
+        },
+        {
+            "group": "Output",
+            "name": "Bit depth",
+            "addr": "0x0601",
+            "kind": "enum",
+            "choices": {
+                "8-bit": 8,
+                "10-bit": 10,
+                "12-bit": 12,
+                "14-bit": 14
+            },
+            "lo": 0,
+            "hi": 14,
+            "desc": "Output data bit width",
+            "help": "Selects the ADC output resolution.\n\n8-bit:  highest speed, lowest SNR\n10-bit: balanced\n12-bit: typical for RAW sensors\n14-bit: maximum dynamic range (if supported)\n\nLower bit depths free MIPI bandwidth and allow higher framerates."
+        },
+        {
+            "group": "Identity / status (read-only)",
+            "name": "Chip ID",
+            "addr": "0x0000",
+            "kind": "ro",
+            "desc": "Sensor chip identification (read-only)",
+            "help": "Unique hardware identifier burned into the sensor. Use this to verify the sensor type."
+        },
+        {
+            "group": "Identity / status (read-only)",
+            "name": "Frame counter",
+            "addr": "0x0005",
+            "kind": "ro",
+            "desc": "Free-running frame counter (read-only)",
+            "help": "Increments once per output frame. Useful for detecting dropped frames."
         }
-      ],
-      "lo": 10,
-      "hi": 65535,
-      "desc": "FRAME_LENGTH (16-bit) — total rows per frame",
-      "help": "Sets the vertical frame period (in rows).\n\nT_frame[s] = FRAME_LENGTH × ROW_LENGTH / CLK_IN\n\nIncreasing FRAME_LENGTH reduces the framerate without touching exposure."
-    },
-    {
-      "group": "Window / readout",
-      "name": "Window width",
-      "addr": "0x0344",
-      "kind": "u16be",
-      "lo": 1,
-      "hi": 9999,
-      "desc": "Horizontal window size (pixels)",
-      "help": "Number of pixels to read per line. Set to full width or less for windowed mode."
-    },
-    {
-      "group": "Window / readout",
-      "name": "Window height",
-      "addr": "0x0346",
-      "kind": "u16be",
-      "lo": 1,
-      "hi": 9999,
-      "desc": "Vertical window size (rows)",
-      "help": "Number of rows to read. Full height or less for windowed mode."
-    },
-    {
-      "group": "ADC / gains",
-      "name": "Analog gain",
-      "addr": "0x0204",
-      "kind": "u16be",
-      "lo": 0,
-      "hi": 1023,
-      "desc": "ANA_GAIN — analog amplifier setting",
-      "help": "Pre-ADC gain control. The exact gain multiplier depends on the sensor.\nTypically 100 = 1x, 200 = 2x, etc. (consult datasheet).\n\nHigher values increase sensitivity at the cost of dynamic range."
-    },
-    {
-      "group": "ADC / gains",
-      "name": "Digital gain",
-      "addr": "0x020E",
-      "kind": "u16be",
-      "lo": 0,
-      "hi": 4095,
-      "desc": "DIG_GAIN — post-ADC digital multiplier (16-bit fixed-point, 1.0x = 256)",
-      "help": "Applied after the ADC. Fixed-point format: 1.0x = 0x100 = 256.\n\nExample: 0x200 = 2.0x, 0x80 = 0.5x\n\nLess noise than analog gain at the cost of reduced SNR."
-    },
-    {
-      "group": "MIPI / data link",
-      "name": "Lane count",
-      "addr": "0x0110",
-      "kind": "enum",
-      "choices": {
-        "1 data lane": 0,
-        "2 data lanes": 1,
-        "4 data lanes": 2
-      },
-      "lo": 0,
-      "hi": 2,
-      "desc": "Number of active D-PHY data lanes",
-      "help": "Configures how many parallel MIPI data lanes are used.\n\n0 = 1 lane (lower bandwidth, reduced resolution or fps)\n1 = 2 lanes (standard)\n2 = 4 lanes (high bandwidth)\n\nMust match host receiver configuration."
-    },
-    {
-      "group": "Output",
-      "name": "Bit depth",
-      "addr": "0x0601",
-      "kind": "enum",
-      "choices": {
-        "8-bit": 8,
-        "10-bit": 10,
-        "12-bit": 12,
-        "14-bit": 14
-      },
-      "lo": 0,
-      "hi": 14,
-      "desc": "Output data bit width",
-      "help": "Selects the ADC output resolution.\n\n8-bit:  highest speed, lowest SNR\n10-bit: balanced\n12-bit: typical for RAW sensors\n14-bit: maximum dynamic range (if supported)\n\nLower bit depths free MIPI bandwidth and allow higher framerates."
-    },
-    {
-      "group": "Identity / status (read-only)",
-      "name": "Chip ID",
-      "addr": "0x0000",
-      "kind": "ro",
-      "desc": "Sensor chip identification (read-only)",
-      "help": "Unique hardware identifier burned into the sensor. Use this to verify the sensor type."
-    },
-    {
-      "group": "Identity / status (read-only)",
-      "name": "Frame counter",
-      "addr": "0x0005",
-      "kind": "ro",
-      "desc": "Free-running frame counter (read-only)",
-      "help": "Increments once per output frame. Useful for detecting dropped frames."
-    }
-  ]
+    ]
 }

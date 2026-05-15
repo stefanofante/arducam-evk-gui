@@ -1,23 +1,57 @@
 """
-Configuration manager.
+Configuration discovery for the GUIcamera application.
 
-Scans .cfg files in configs/ and .json profiles in sensors/,
-groups them by sensor TYPE, and exposes lookup helpers.
+The Arducam EVK SDK is sensor-agnostic: a single Camera object is
+configured at run-time from a text ``.cfg`` file that describes the
+sensor mode (resolution, bit depth, output format, I2C addressing,
+...). To keep the GUI itself sensor-agnostic, this module pairs every
+``.cfg`` file shipped under ``configs/`` with an optional sensor
+profile (``sensors/*.json``) describing the register map that should
+be exposed in the GUI.
+
+At start-up the GUI calls :meth:`ConfigManager.discover_configurations`
+and :meth:`ConfigManager.discover_sensor_profiles`. The user is then
+presented with a sensor selector populated from the discovered
+configurations and, for each sensor, the list of available operating
+modes (configuration files).
+
+The module can also be executed directly to print a summary of the
+discovered configurations and profiles, which is convenient when
+adding a new sensor::
+
+    python -m config_manager
+
+Author:  Stefano Fante - STLINE srl
+License: MIT (see ../LICENSE)
 """
 
 import json
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 
 
 @dataclass
 class SensorProfile:
-    """Represents a sensor hardware profile."""
+    """In-memory representation of a ``sensors/*.json`` file.
+
+    Attributes:
+        name: Human-readable identifier (typically the sensor part
+            number).
+        description: Optional one-liner shown in the UI.
+        match: List of case-insensitive aliases used to bind this
+            profile to a ``.cfg`` file via its ``TYPE`` field.
+        registers: Raw register descriptors (see ``_template.json`` for
+            the supported schema).
+        guide: Optional free-form Markdown/HTML text shown in the
+            help/guide tab.
+        tabs: Optional per-tab hint messages keyed by tab identifier.
+    """
+
     name: str
     description: str
-    match: List[str]  # TYPE field match patterns
+    match: List[str]
     registers: List[Dict]
     guide: Optional[str] = None
     tabs: Optional[Dict[str, str]] = None
@@ -25,18 +59,39 @@ class SensorProfile:
 
 @dataclass
 class CameraConfig:
-    """Represents a single camera configuration file."""
+    """Metadata extracted from a single camera ``.cfg`` file.
+
+    Only the fields needed by the GUI selector are stored. The SDK
+    re-parses the file when the camera is actually opened, so this
+    object is purely informational.
+
+    Attributes:
+        path: Absolute path of the ``.cfg`` file on disk.
+        filename: ``path.name`` cached for convenience.
+        sensor_type: Value of the ``TYPE`` field (sensor identifier).
+        sensor_name: Optional display name resolved from the matching
+            :class:`SensorProfile`.
+        resolution: ``"WIDTHxHEIGHT"`` string parsed from ``SIZE``.
+        bit_depth: Output bit depth parsed from ``BIT_WIDTH``.
+        format_info: Raw ``FORMAT`` field; the meaning is sensor
+            specific (typically ``image_format, color_mode``).
+    """
+
     path: Path
     filename: str
-    sensor_type: str  # TYPE field from .cfg
-    sensor_name: Optional[str] = None  # Display name (from profile match)
-    resolution: Optional[str] = None  # SIZE field (e.g., "640x480")
-    bit_depth: Optional[int] = None  # BIT_WIDTH field
-    format_info: Optional[str] = None  # FORMAT field description
+    sensor_type: str
+    sensor_name: Optional[str] = None
+    resolution: Optional[str] = None
+    bit_depth: Optional[int] = None
+    format_info: Optional[str] = None
 
     @property
     def display_name(self) -> str:
-        """User-friendly config name."""
+        """User-friendly label used in combo-boxes.
+
+        Falls back to the bare file name when the configuration does
+        not declare a resolution, so the entry is never empty.
+        """
         if self.resolution:
             depth_str = f"{self.bit_depth}b" if self.bit_depth else ""
             return f"{self.sensor_name or self.sensor_type} {self.resolution} {depth_str}".strip()
@@ -44,20 +99,34 @@ class CameraConfig:
 
 
 class ConfigManager:
-    """Manages sensor configurations and profiles."""
+    """Discovers camera configurations and sensor profiles on disk.
+
+    The manager scans two sibling directories under the GUIcamera
+    package root:
+
+    * ``configs/`` -- one ``.cfg`` file per supported sensor mode.
+    * ``sensors/`` -- one ``.json`` profile per supported sensor.
+
+    Configurations are grouped by their ``TYPE`` field so the GUI can
+    present them in a sensor-then-mode picker. A configuration without
+    a matching profile is still usable for streaming; only the
+    register-level features are disabled.
+    """
 
     def __init__(self, gui_camera_root: Path):
-        """
-        Initialize the configuration manager.
+        """Initialise the manager but do not perform any I/O yet.
 
         Args:
-            gui_camera_root: Path to the GUIcamera directory root
+            gui_camera_root: Path to the ``GUIcamera/`` directory. The
+                ``configs`` and ``sensors`` sub-directories are
+                resolved relative to this root.
         """
         self.root = Path(gui_camera_root)
         self.configs_dir = self.root / "configs"
         self.sensors_dir = self.root / "sensors"
 
-        # State
+        # Discovery results. Populated by :meth:`discover_*` and read
+        # by the public getters; the GUI does not access them directly.
         self._configs: List[CameraConfig] = []
         self._profiles: Dict[str, SensorProfile] = {}
         self._sensor_groups: Dict[str, List[CameraConfig]] = {}
@@ -256,10 +325,10 @@ class ConfigManager:
 
 
 def print_configuration_summary(manager: ConfigManager) -> None:
-    """
-    Print a summary of discovered configurations and profiles.
+    """Print a textual summary of the discovered assets.
 
-    Useful for debugging and validation.
+    Intended for command-line debugging when adding a new sensor. The
+    output is plain ASCII so it survives non-UTF-8 Windows consoles.
     """
     print("\n" + "=" * 70)
     print("Configuration Summary")
@@ -267,28 +336,33 @@ def print_configuration_summary(manager: ConfigManager) -> None:
 
     sensors = manager.get_all_sensor_types()
     if not sensors:
-        print("❌ No sensor configurations found.")
+        print("No sensor configurations found.")
     else:
-        print(f"\n📦 Sensor Types ({len(sensors)}):")
+        print(f"\nSensor types ({len(sensors)}):")
         for sensor in sensors:
             configs = manager.get_configs_for_sensor(sensor)
-            print(f"  • {sensor}: {len(configs)} config(s)")
+            print(f"  - {sensor}: {len(configs)} config(s)")
             for cfg in configs:
-                print(f"      - {cfg.display_name} ({cfg.path.name})")
+                print(f"      * {cfg.display_name} ({cfg.path.name})")
 
     profiles = manager._profiles
     if not profiles:
-        print("\n❌ No sensor profiles found.")
+        print("\nNo sensor profiles found.")
     else:
-        print(f"\n🎨 Sensor Profiles ({len(profiles)}):")
+        print(f"\nSensor profiles ({len(profiles)}):")
         for name, profile in profiles.items():
-            print(f"  • {name}: {profile.description[:60]}...")
+            desc = (profile.description or "").strip()
+            if len(desc) > 60:
+                desc = desc[:60] + "..."
+            print(f"  - {name}: {desc}")
             if profile.match:
-                print(f"      Match: {profile.match}")
+                print(f"      match: {profile.match}")
 
 
 if __name__ == "__main__":
-    # Test / validation
+    # Stand-alone smoke test: useful when adding a new sensor to make
+    # sure both the .cfg and the .json profile are picked up before
+    # launching the full GUI.
     gui_root = Path(__file__).parent
     manager = ConfigManager(gui_root)
     manager.discover_configurations()
