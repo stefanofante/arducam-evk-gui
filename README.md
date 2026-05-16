@@ -1,4 +1,4 @@
-# EVK — Arducam EVK with GUI Camera
+# arducam-EVK-GUI — Arducam EVK with GUI Camera
 
 This project is a fork of [ArduCAM/ArduCam_EVK_Demo](https://github.com/ArduCAM/ArduCam_EVK_Demo)
 that adds a unified graphical interface for the Arducam EVK SDK.
