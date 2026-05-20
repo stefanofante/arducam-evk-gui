@@ -1,0 +1,366 @@
+{
+  "name": "Mira050",
+  "description": "ams OSRAM Mira050 — 1/7\" 0.5 MP NIR-enhanced global shutter, mono 8/10/10-HS/12-bit, MIPI CSI-2 D-PHY 1-lane up to 1.5 Gbit/s, max 200 fps @ 0.5 MP in 10-HS. Verified against DS000743 v9-01 (2025-Sep) and ams-OSRAM RPi4 driver mira050.inl (release v2024-07-1).",
+  "match": [
+    "MIRA050",
+    "MIRA-050"
+  ],
+  "guide": "Mira050 quick guide (per DS000743 v9-01)\n=========================================\n\n- 576x768 active pixels (CSP) / 600x800 (bare die), 2.79 µm pitch, BSI global shutter.\n- 8 / 10 / 10-HS / 12-bit RAW, max 200 fps @ 0.5 MP in 10-HS mode (sec. 1.1).\n- MIPI CSI-2 v1.3 + D-PHY v1.2, 1 data + 1 clock lane, up to 1.5 Gbit/s/lane.\n- CCI (sec. 6.4): 16-bit register address, 8-bit data. I2C slave 011011Xb, X from CCI_ADDRESS pin.\n- Default ams driver mode: 576x768 @ 50 fps, 12-bit, 1-lane MIPI @ 1.5 Gbit/s.\n- CLK_IN (sec. 6.3): 12-64 MHz (excluding 20-24 MHz). ams driver uses 24 MHz.\n\nCRITICAL — Banking (sec. 6.4, driver lines 104, 3201-3211)\n----------------------------------------------------------\nUnlike the Mira220, the Mira050 partitions its low-address registers (0x00xx, 0x01xx)\ninto multiple BANKS. Some addresses (notably 0x001D) carry different meaning in bank 0\nvs bank 1. ALWAYS write BANK_SEL (0xE000) to the required bank before touching any\nregister tagged with a `bank` field in this profile. Registers tagged `bank: null`\n(or without a bank field) are bank-independent (0xE0xx, 0x20xx, 0x40xx).\n\nThe ams driver convention (used at run-time):\n  - bank 0: TRIG_SYNC_DELAY (0x001A), DMUX0_SEL (0x00F3)\n  - bank 1: EN_TRIG_ILLUM (0x001C), ILLUM_WIDTH/DELAY (0x0019, 0x0016),\n            EN_TRIG_SYNC and TRIG_SYNC_ON_REQ_1 (both 0x001D in bank 1 per runtime trace)\n  - bank-independent: everything in 0xE0xx, 0x20xx, 0x40xx\n\nKey register groups\n-------------------\n  0xE000        BANK_SEL          0 or 1, prerequisite for bank-scoped writes.\n  0xE004        RW_CONTEXT        A/B context selector (sec. 6.4.4).\n  0x000A        CMD_REQ_1         Rising edge -> REQ_EXP (sec. 6.9).\n  0x000C        CMD_HALT_BLOCK    Rising edge -> stop Streaming -> IDLE.\n  0x0008..000B  TARGET_FRAME_TIME 32-bit µs, frame period (Triggered Internal / Streaming).\n  0x000E..0011  EXP_TIME_L        32-bit µs, primary exposure.\n  0x0012..0015  EXP_TIME_S        32-bit µs, dark exposure (BLC mode only).\n  0x0016..0018  ILLUM_DELAY       24-bit, 20 LSB valid; TRIG_ILLUM vs exposure offset.\n  0x0019..001B  ILLUM_WIDTH       24-bit, TRIG_ILLUM high time.\n  0x001C        EN_TRIG_ILLUM     bit[0] enable TRIG_ILLUM output (bank 1).\n  0x001D        EN_TRIG_SYNC / TRIG_SYNC_ON_REQ_1 (bank 1).\n  0x001A        TRIG_SYNC_DELAY   slave-sync delay (bank 0).\n  0x0024        GDIG_AMP          digital gain amp (datasheet sec. 5.2.3).\n  0x0056..0057  DELTA_TEST_IMG    2D gradient step for test pattern mode 0x02.\n  0x0060..0061  TRAINING_WORD     fixed value for test pattern mode 0x01.\n  0x0062        TEST_PATTERN      0=off, 1=fixed, 2=2D gradient.\n  0x0064..006F  OTP_*             OTP memory access (sec. 5.10).\n  0x0193..0194  OFFSET_CLIPPING   black-level offset clip (16-bit).\n  0x01F0/01F3   BIAS_RG_ADCGAIN / BIAS_RG_MULT  analog-gain LUT entries.\n  0x207C        PLL_LOCKED        bit[0] = 1 when PLL locked (read-only).\n  0x209A        CSI2_TX_HS_ACTIVE D-PHY data lane in HS state (read-only).\n  0x4002        CURRENT_ACTIVE_CONTEXT  reads back live A/B context.\n\nSensor Control Modes (sec. 6.8)\n-------------------------------\n  Full External, Triggered Internal, Background Light Cancellation, Streaming.\n  BLC mode pairs EXP_TIME_L (illuminated) with EXP_TIME_S (dark) and performs\n  on-chip subtraction (sec. 6.8.4, fig. 24-25). Unique to the Mira050 family.\n\nBring-up sequence per mode\n--------------------------\n  Each acquisition mode (e.g. 576x768_50fps_12b_1lane) requires uploading a\n  pre-soft-reset register table (~640 writes, ams driver lines 308-953 for 12-bit),\n  then a soft reset, then a post-soft-reset table (~3 writes). These bulk uploads\n  are part of the .cfg file, not editable per-register from the GUI.\n\nNotes\n-----\n- I2C addresses 0x0A (µC), 0x2D (PMIC), 0x53 (LED driver) belong to the RPi4 sensor\n  board companion chips, NOT to the Mira050 itself. Irrelevant for the FX3 EVK.\n- Analog gain in 12-bit Default mode is discrete (x1, x2, x4), loaded from the\n  three partial_analog_gain_xN_12bit[] tables in the ams driver. Manual editing\n  of GDIG_AMP / BIAS_RG_ADCGAIN / BIAS_RG_MULT requires reproducing a full LUT row.\n- Color filter info (RGB / RGB-IR): the GUI is configured mono-only; for RGB variants\n  the on-chip Bayer pattern is BG/GR for RGB and a 4x4 RGB-IR pattern (sec. 8).",
+  "tabs": {
+    "controls": "The cfg exposes Framerate and Exp(us) via the SDK. Analog gain is discrete (x1/x2/x4 in 12-bit Default) loaded from on-chip LUT; manual override via GDIG_AMP/BIAS_RG_* is possible but must reproduce a full LUT row.",
+    "registers": "REMEMBER the BANK_SEL prerequisite for bank-scoped registers (0x001C, 0x001D, 0x0019, 0x0016, 0x001A, 0x00F3 and others). Check the bank field in each register entry and write BANK_SEL = bank before the I2C transaction.",
+    "advanced": "1-lane MIPI @ 1.5 Gbit/s data rate. Re-tune FX3 transfer size if changing bit depth (8b VGA reaches ~250 fps and stresses USB throughput differently than 12b)."
+  },
+  "registers": [
+    {
+      "group": "Acquisition / state",
+      "name": "Bank select",
+      "addr": "0xE000",
+      "bank": null,
+      "kind": "enum",
+      "choices": {
+        "Bank 0 (default)": 0,
+        "Bank 1": 1
+      },
+      "lo": 0,
+      "hi": 1,
+      "desc": "BANK_SEL — partitions the low-address register space",
+      "help": "Mira050-specific. Selects which bank of registers is addressed when writing to the 0x00xx/0x01xx ranges. Bank 0 after reset.\n\nThe Mira220 has no such banking, which is why this register has no equivalent in the Mira220 profile.\n\nPrerequisite for every bank-scoped write in this profile. If a register entry has \"bank\": 1, write BANK_SEL = 1 first, then perform the I2C transaction, then optionally restore BANK_SEL = 0.",
+      "bits": [
+        {
+          "lsb": 0,
+          "width": 1,
+          "name": "BANK",
+          "desc": "0 = bank 0, 1 = bank 1"
+        }
+      ]
+    },
+    {
+      "group": "Acquisition / state",
+      "name": "Active context (A / B)",
+      "addr": "0xE004",
+      "bank": null,
+      "kind": "enum",
+      "choices": {
+        "Context A (0x00)": 0,
+        "Context B (0x01)": 1
+      },
+      "lo": 0,
+      "hi": 1,
+      "desc": "RW_CONTEXT — selects which of the two register contexts receives writes",
+      "help": "Per DS000743 sec. 6.4.4. The Mira050 keeps two parallel sets of context-switchable registers (exposure, ROI, gain, illumination-trigger enable, ...). Writes hit the context selected here.\n\nBy default the active-context handover is synchronised to the next frame readout, so staging configuration in the inactive context does not disturb the current acquisition.\n\nReadback of the live context is at 0x4002 (CURRENT_ACTIVE_CONTEXT)."
+    },
+    {
+      "group": "Acquisition / state",
+      "name": "Request exposure (CMD_REQ_1)",
+      "addr": "0x000A",
+      "bank": 0,
+      "kind": "bool",
+      "desc": "CMD_REQ_1 [0] — rising edge triggers REQ_EXP",
+      "help": "Software equivalent of the REQ_1 pin. A rising edge on bit 0 triggers a REQ_EXP command, which starts an exposure (Full External mode) or a finite sequence (Triggered Internal / Background Light Cancellation / Streaming modes).\n\nIn single-pin control, a falling edge on this bit additionally triggers REQ_FRAME (datasheet sec. 6.8.1).",
+      "bits": [
+        {
+          "lsb": 0,
+          "width": 1,
+          "name": "REQ",
+          "desc": "1 = REQ_EXP rising edge"
+        }
+      ]
+    },
+    {
+      "group": "Acquisition / state",
+      "name": "Halt streaming (CMD_HALT_BLOCK)",
+      "addr": "0x000C",
+      "bank": 0,
+      "kind": "bool",
+      "desc": "CMD_HALT_BLOCK [0] — exit Streaming mode",
+      "help": "Rising edge on bit 0 finishes the current frame readout and moves the sensor back to IDLE. This is the only documented way to exit Streaming mode without an external reset (datasheet sec. 6.9)."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "Target frame time (us)",
+      "kind": "multi",
+      "bank": 0,
+      "parts": [
+        { "addr": "0x0008", "reg_lsb": 0, "width": 8, "value_lsb": 24 },
+        { "addr": "0x0009", "reg_lsb": 0, "width": 8, "value_lsb": 16 },
+        { "addr": "0x000A", "reg_lsb": 0, "width": 8, "value_lsb": 8  },
+        { "addr": "0x000B", "reg_lsb": 0, "width": 8, "value_lsb": 0  }
+      ],
+      "lo": 0,
+      "hi": 4294967295,
+      "desc": "TARGET_FRAME_TIME (32-bit, µs) — frame period in Triggered Internal / BLC / Streaming",
+      "help": "Inter-frame period in microseconds. 32-bit big-endian register (ams driver write_be32, line 3696). Ignored in Full External mode.\n\nFor maximum frame rate, set this equal to glob_time + readout_time. The driver-derived MIN_VBLANK is 15900 (60 fps) or 7560 (120 fps) — use those as practical lower bounds when manually computing.\n\nWARNING: shares address 0x000A with CMD_REQ_1 in single-byte writes. The driver always uses a 4-byte big-endian write_be32, which atomically covers 0x0008..0x000B."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "Exposure long / primary (us)",
+      "kind": "multi",
+      "bank": 0,
+      "parts": [
+        { "addr": "0x000E", "reg_lsb": 0, "width": 8, "value_lsb": 24 },
+        { "addr": "0x000F", "reg_lsb": 0, "width": 8, "value_lsb": 16 },
+        { "addr": "0x0010", "reg_lsb": 0, "width": 8, "value_lsb": 8  },
+        { "addr": "0x0011", "reg_lsb": 0, "width": 8, "value_lsb": 0  }
+      ],
+      "lo": 5,
+      "hi": 1000000,
+      "desc": "EXP_TIME_L (32-bit, µs) — primary / illuminated exposure",
+      "help": "Primary exposure time in microseconds. 32-bit big-endian write (ams driver write_be32, line 3669).\n\nDriver-computed min is ~5 µs at 1.5 Gbit/s 12-bit, max capped at 1 s. Default exposure is 1000 µs.\n\nIn Background Light Cancellation mode (sec. 6.8.4) this is the ILLUMINATED exposure; the dark exposure uses EXP_TIME_S (0x0012)."
+    },
+    {
+      "group": "Exposure / framing",
+      "name": "Exposure short / dark (us, BLC mode)",
+      "kind": "multi",
+      "bank": 0,
+      "parts": [
+        { "addr": "0x0012", "reg_lsb": 0, "width": 8, "value_lsb": 24 },
+        { "addr": "0x0013", "reg_lsb": 0, "width": 8, "value_lsb": 16 },
+        { "addr": "0x0014", "reg_lsb": 0, "width": 8, "value_lsb": 8  },
+        { "addr": "0x0015", "reg_lsb": 0, "width": 8, "value_lsb": 0  }
+      ],
+      "lo": 5,
+      "hi": 1000000,
+      "desc": "EXP_TIME_S (32-bit, µs) — dark exposure in BLC mode",
+      "help": "Only used in Background Light Cancellation mode (datasheet sec. 6.8.4 / fig. 24). Programs the exposure of the first (no-illumination) capture.\n\nThe on-chip subtraction emits the difference image; a single MIPI readout per BLC frame is generated.\n\nIn all other modes, this register is unused."
+    },
+    {
+      "group": "Illumination trigger",
+      "name": "Enable TRIG_ILLUM output",
+      "addr": "0x001C",
+      "bank": 1,
+      "kind": "bool",
+      "desc": "EN_TRIG_ILLUM [0] — master enable for TRIG_ILLUM pad (bank 1)",
+      "help": "Master enable for the TRIG_ILLUM output pin, which drives an external NIR illuminator in sync with the pixel exposure (datasheet sec. 5.11). Width programmed at 0x0019 (ILLUM_WIDTH), delay at 0x0016 (ILLUM_DELAY).\n\nThe ams driver writes this with BANK_SEL = 1 (line 3208) before the I2C transaction (line 3248)."
+    },
+    {
+      "group": "Illumination trigger",
+      "name": "Illumination width",
+      "kind": "multi",
+      "bank": 1,
+      "parts": [
+        { "addr": "0x0019", "reg_lsb": 0, "width": 8, "value_lsb": 16 },
+        { "addr": "0x001A", "reg_lsb": 0, "width": 8, "value_lsb": 8  },
+        { "addr": "0x001B", "reg_lsb": 0, "width": 8, "value_lsb": 0  }
+      ],
+      "lo": 0,
+      "hi": 16777215,
+      "desc": "ILLUM_WIDTH (24-bit) — high time of TRIG_ILLUM",
+      "help": "High time of the TRIG_ILLUM pulse, all 24 bits valid (ams driver comment, line 3271).\n\nDriver default = EXP_TIME × DATA_RATE / 8. The trigger is synchronised to the actual pixel exposure, so sensor-side latency between request and exposure start is auto-compensated by the on-chip sequencer (datasheet fig. 4).\n\nAddress 0x001A is shared with TRIG_SYNC_DELAY in bank 0 — make sure BANK_SEL = 1 before this write."
+    },
+    {
+      "group": "Illumination trigger",
+      "name": "Illumination delay",
+      "kind": "multi",
+      "bank": 1,
+      "parts": [
+        { "addr": "0x0016", "reg_lsb": 0, "width": 8, "value_lsb": 16 },
+        { "addr": "0x0017", "reg_lsb": 0, "width": 8, "value_lsb": 8  },
+        { "addr": "0x0018", "reg_lsb": 0, "width": 8, "value_lsb": 0  }
+      ],
+      "lo": 0,
+      "hi": 1048575,
+      "desc": "ILLUM_DELAY (24-bit, [19:0] valid) — TRIG_ILLUM rising edge vs exposure start",
+      "help": "Programmable delay between the TRIG_ILLUM rising edge and the start of pixel exposure. Only bits [19:0] of the 24-bit field are valid (ams driver comment, line 3280) — upper 4 bits are reserved.\n\nPositive, negative or zero delay are supported (datasheet sec. 5.11 fig. 4). Driver default = 1 << 19."
+    },
+    {
+      "group": "Illumination trigger",
+      "name": "Enable TRIG_SYNC / tie REQ_1 to TRIG_SYNC",
+      "addr": "0x001D",
+      "bank": 1,
+      "kind": "bool",
+      "desc": "EN_TRIG_SYNC / TRIG_SYNC_ON_REQ_1 [0] — slave-sync enable (bank 1)",
+      "help": "Single physical bit at 0x001D in bank 1, referenced by the ams driver under two semantic names (EN_TRIG_SYNC at line 3265, TRIG_SYNC_ON_REQ_1 at line 3256) — the driver writes the same value to the same register in both calls. Documenting both names for cross-reference with driver source.\n\nWhen 1, the TRIG_SYNC output is enabled and follows the REQ_1 edge; used to slave a second sensor in a stereo setup (TRIG_SYNC pin not bonded on CSP package).\n\nNOTE: the #define MIRA050_TRIG_SYNC_ON_REQ_1 in the driver header has a stale \"// bank 0\" comment that contradicts the runtime BANK_SEL = 1 at lines 3208 / 3265. We follow the runtime behaviour as authoritative."
+    },
+    {
+      "group": "Illumination trigger",
+      "name": "TRIG_SYNC delay",
+      "kind": "multi",
+      "bank": 0,
+      "parts": [
+        { "addr": "0x001A", "reg_lsb": 0, "width": 8, "value_lsb": 8 },
+        { "addr": "0x001B", "reg_lsb": 0, "width": 8, "value_lsb": 0 }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "TRIG_SYNC_DELAY (bank 0) — slave-sync output delay",
+      "help": "Programmable delay on the TRIG_SYNC output pad. Bank-0 address — make sure BANK_SEL = 0 before writing.\n\nNote: shares its byte addresses with the middle bytes of ILLUM_WIDTH in bank 1. Banking is the only thing that disambiguates them."
+    },
+    {
+      "group": "Illumination trigger",
+      "name": "DMUX0 output select",
+      "addr": "0x00F3",
+      "bank": 0,
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "DMUX0_SEL — internal signal routed to DMUX0 test pad (bank 0)",
+      "help": "Selects which internal signal is muxed to the DMUX0 test pad. The ams driver uses values 39 (manual illumination) and 40 (auto / sync-tied)."
+    },
+    {
+      "group": "ADC / gains",
+      "name": "Digital gain amplifier",
+      "addr": "0x0024",
+      "bank": 0,
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "GDIG_AMP — digital gain control",
+      "help": "Digital gain. Datasheet documents a 1/16x step from 1x to 16x in 8/10/10-HS/12-bit modes (sec. 5.2.3). Exact register encoding is documented in product description PD001051 (not in the public datasheet) — ams driver loads this together with the per-mode analog-gain LUT entry.\n\nDo not edit standalone unless reproducing a full LUT row from partial_analog_gain_xN_12bit[] in the ams driver."
+    },
+    {
+      "group": "ADC / gains",
+      "name": "Bias ADC gain (analog gain LUT)",
+      "addr": "0x01F0",
+      "bank": 0,
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "BIAS_RG_ADCGAIN — analog gain ADC bias (LUT entry)",
+      "help": "Part of the analog-gain LUT. The ams driver loads it from the partial_analog_gain_x{1,2,4}_12bit tables together with BIAS_RG_MULT and GDIG_AMP. Do not edit manually unless you are reproducing one of those LUT entries."
+    },
+    {
+      "group": "ADC / gains",
+      "name": "Bias multiplier (analog gain LUT)",
+      "addr": "0x01F3",
+      "bank": 0,
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "BIAS_RG_MULT — analog gain multiplier bias (LUT entry)",
+      "help": "Companion to BIAS_RG_ADCGAIN in the analog-gain LUT. See note on the BIAS_RG_ADCGAIN entry."
+    },
+    {
+      "group": "ADC / gains",
+      "name": "Offset clipping",
+      "kind": "multi",
+      "bank": 0,
+      "parts": [
+        { "addr": "0x0193", "reg_lsb": 0, "width": 8, "value_lsb": 8 },
+        { "addr": "0x0194", "reg_lsb": 0, "width": 8, "value_lsb": 0 }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "OFFSET_CLIPPING (16-bit) — black-level offset clipping",
+      "help": "16-bit big-endian register controlling the offset subtracted before output (ams driver write_be16, lines 3933 / 3996). Loaded as part of the per-mode pre-soft-reset sequence."
+    },
+    {
+      "group": "Test pattern",
+      "name": "Test pattern mode",
+      "addr": "0x0062",
+      "bank": 0,
+      "kind": "enum",
+      "choices": {
+        "Disabled (0x00)": 0,
+        "Fixed data (0x01)": 1,
+        "2D gradient (0x02)": 2
+      },
+      "lo": 0,
+      "hi": 2,
+      "desc": "TEST_PATTERN — replaces pixel data with synthetic pattern",
+      "help": "Useful for MIPI link integrity testing and for validating the host-side ISP without a scene.\n\n  0x00  Disabled (normal pixel data)\n  0x01  Fixed value taken from TRAINING_WORD (0x0060/0x0061)\n  0x02  2D gradient with per-pixel step from DELTA_TEST_IMG (0x0056/0x0057)"
+    },
+    {
+      "group": "Test pattern",
+      "name": "Training word",
+      "kind": "multi",
+      "bank": 0,
+      "parts": [
+        { "addr": "0x0060", "reg_lsb": 0, "width": 8, "value_lsb": 8 },
+        { "addr": "0x0061", "reg_lsb": 0, "width": 8, "value_lsb": 0 }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "TRAINING_WORD (16-bit) — fixed value for test pattern mode 0x01",
+      "help": "Pixel value emitted by every pixel when TEST_PATTERN = 0x01."
+    },
+    {
+      "group": "Test pattern",
+      "name": "2D gradient step",
+      "kind": "multi",
+      "bank": 0,
+      "parts": [
+        { "addr": "0x0056", "reg_lsb": 0, "width": 8, "value_lsb": 8 },
+        { "addr": "0x0057", "reg_lsb": 0, "width": 8, "value_lsb": 0 }
+      ],
+      "lo": 0,
+      "hi": 65535,
+      "desc": "DELTA_TEST_IMG (16-bit) — per-pixel increment for 2D gradient",
+      "help": "Per-pixel increment used by test-pattern mode 0x02."
+    },
+    {
+      "group": "OTP memory",
+      "name": "OTP command",
+      "addr": "0x0066",
+      "bank": 0,
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "OTP_COMMAND — OTP operation selector"
+    },
+    {
+      "group": "OTP memory",
+      "name": "OTP address",
+      "addr": "0x0067",
+      "bank": 0,
+      "kind": "u8",
+      "lo": 0,
+      "hi": 255,
+      "desc": "OTP_ADDR — OTP word address"
+    },
+    {
+      "group": "OTP memory",
+      "name": "OTP start",
+      "addr": "0x0064",
+      "bank": 0,
+      "kind": "bool",
+      "desc": "OTP_START [0] — rising edge starts the OTP transaction",
+      "help": "Write 1, then 0, to launch the OTP operation specified by OTP_COMMAND / OTP_ADDR. Poll OTP_BUSY (0x0065) until 0, then read OTP_DOUT (0x006C..0x006F)."
+    },
+    {
+      "group": "OTP memory",
+      "name": "OTP busy",
+      "addr": "0x0065",
+      "bank": 0,
+      "kind": "ro",
+      "desc": "OTP_BUSY [0] — 1 while OTP transaction in flight (read-only)",
+      "help": "Read-only status. The 8 kbit OTP holds the unique device ID and ams calibration data (datasheet sec. 5.10)."
+    },
+    {
+      "group": "OTP memory",
+      "name": "OTP data out",
+      "addr": "0x006C",
+      "bank": 0,
+      "kind": "ro",
+      "desc": "OTP_DOUT (32-bit, big-endian read) — OTP read register",
+      "help": "Read-only. The ams driver reads 4 consecutive bytes starting at 0x006C with read_be32 (line 3055). Available after OTP_BUSY clears."
+    },
+    {
+      "group": "Identity / status (read-only)",
+      "name": "PLL locked",
+      "addr": "0x207C",
+      "bank": null,
+      "kind": "ro",
+      "desc": "PLL_LOCKED [0] — set when the on-chip PLL has locked",
+      "help": "Poll after the PLL enable write during power-up; the sensor cannot stream until this reads 1 (datasheet sec. 6.2.1 step 7). Bank-independent."
+    },
+    {
+      "group": "Identity / status (read-only)",
+      "name": "CSI-2 TX HS active",
+      "addr": "0x209A",
+      "bank": null,
+      "kind": "ro",
+      "desc": "CSI2_TX_HS_ACTIVE [0] — D-PHY data lane in high-speed state",
+      "help": "Read-only. 1 = data lane currently in HS mode (i.e. transmitting a packet burst), 0 = LP / ULPS. Useful for diagnosing host receiver issues. Bank-independent."
+    },
+    {
+      "group": "Identity / status (read-only)",
+      "name": "Current active context",
+      "addr": "0x4002",
+      "bank": null,
+      "kind": "ro",
+      "desc": "CURRENT_ACTIVE_CONTEXT [0] — live A/B context the sequencer is using",
+      "help": "Read-only mirror of which of the two register contexts (A = 0, B = 1) is currently in use by the sequencer. Use this to verify a context switch has landed before reusing the previous context for staging the next configuration. Bank-independent."
+    }
+  ]
+}
