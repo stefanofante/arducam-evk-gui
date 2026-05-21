@@ -20,6 +20,46 @@ The tool was developed primarily to test the **ams OSRAM Mira220** image
 sensor and to have a fast, easy-to-use development aid for bring-up,
 parameter tuning and register-level debug.
 
+## Disclaimer
+
+This project is an **independent**, community-maintained tool. It is **not**
+an official product of, nor endorsed, reviewed or supported by:
+
+- **ams OSRAM AG** (manufacturer of the Mira image sensor family), or
+- **Arducam Technology Co., Ltd.** (manufacturer of the EVK hardware and
+  author of the bundled `ArduCam_EVK_SDK` and `ArduCam_EVK_Demo` code).
+
+All sensor-specific information used to build the register profiles and
+sample configurations distributed here (currently for **Mira220**, with
+**Mira050** in progress) was derived exclusively from:
+
+1. **Official ams OSRAM datasheets and product briefs** for the Mira
+   sensor family (Mira016, Mira050, Mira220), referenced under
+   [`sensorDatasheets/`](sensorDatasheets/).
+2. **Public open-source drivers** released by ams OSRAM on GitHub:
+   - [ams-OSRAM/mira220_v4l2_driver](https://github.com/ams-OSRAM/mira220_v4l2_driver)
+   - [ams-OSRAM/mira050_v4l2_driver](https://github.com/ams-OSRAM/mira050_v4l2_driver)
+   - [ams-OSRAM/mira016_v4l2_driver](https://github.com/ams-OSRAM/mira016_v4l2_driver)
+   - [ams-OSRAM/libcamera](https://github.com/ams-OSRAM/libcamera)
+     (camera helpers and tuning files under `src/ipa/rpi/cam_helper/` and
+     `src/ipa/rpi/vc4/data/`).
+3. **Public open-source code** from
+   [ArduCAM/ArduCam_EVK_Demo](https://github.com/ArduCAM/ArduCam_EVK_Demo)
+   and [ArduCAM/ArduCam_EVK_SDK](https://github.com/ArduCAM/ArduCam_EVK_SDK).
+
+No confidential register information, internal documentation or
+non-public errata was used. Because the upstream sensor settings,
+register maps and recommended bring-up sequences may evolve over time,
+**the contents of this repository may diverge from the most recent
+ams OSRAM recommendations** and are provided "as-is", with no warranty
+of fitness for production use. Users who need an authoritative,
+maintained reference should always consult the official ams OSRAM
+material and drivers linked above.
+
+Mira and ams OSRAM are trademarks of ams-OSRAM AG; Arducam is a
+trademark of Arducam Technology Co., Ltd. These names are used here for
+identification purposes only.
+
 ## Repository Layout
 
 ```
